@@ -18,7 +18,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 # =========================================================
 # إعدادات تيليجرام من متغيرات البيئة
 # =========================================================
-TELEGRAM_TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
+TELEGRAM_TOKEN = "8676742666:AAEaEciYnMu713A-riJ0z2JqIE1MrGfYeHU"
 TELEGRAM_CHAT_ID = "5067771509"
 
 

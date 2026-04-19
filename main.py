@@ -1,5 +1,5 @@
 """
-نظام التداول الورقي المتكامل - النسخة النهائية الكاملة
+نظام التداول الورقي المتكامل - النسخة النهائية الكاملة (معدلة للتخفيف)
 التحسينات المدمجة:
 - مؤشر TSI للزخم غير المتأخر
 - فلتر ميل EMA لتأكيد الاختراقات
@@ -12,6 +12,8 @@
 - نظام تأكيد الزخم عبر 3 دورات متتالية
 - حجم صفقة ديناميكي مرتبط بجودة الإشارة ونسبة الصعود
 - مدة مسح 3 دقائق (استجابة أسرع)
+- ⭐ تخفيف: سكور فلتر ≥ 20 (بدلاً من 30)
+- ⭐ تخفيف: نقاط استراتيجية ≥ 2 (بدلاً من 3)
 """
 
 import asyncio
@@ -39,8 +41,8 @@ telegram_app = None
 # إعدادات التداول
 # =========================================================
 INITIAL_CAPITAL = 1000
-MAX_POSITIONS = 10  # زدنا الحد لاستيعاب تقسيم رأس المال الجديد
-MIN_APPEARANCES = 3  # عدد مرات الظهور للتأكيد
+MAX_POSITIONS = 10
+MIN_APPEARANCES = 3
 
 async def send_telegram_message(text: str, to_public: bool = True, to_private: bool = True):
     global telegram_app
@@ -503,18 +505,15 @@ class CandidateTracker:
                 ])
 
     def add_candidates(self, candidates_list, scan_time):
-        # تحديث عداد الظهور
         for cand in candidates_list[:3]:
             symbol = cand['symbol']
             self.appearance_count[symbol] = self.appearance_count.get(symbol, 0) + 1
         
-        # تنظيف العداد للعملات التي لم تعد في القائمة
         current_symbols = {c['symbol'] for c in candidates_list[:3]}
         for symbol in list(self.appearance_count.keys()):
             if symbol not in current_symbols:
                 self.appearance_count[symbol] = 0
         
-        # تسجيل المرشحين النشطين
         for rank, cand in enumerate(candidates_list[:3], 1):
             record = {
                 'scan_time': scan_time,
@@ -669,7 +668,6 @@ class PaperTrader:
         stop_loss = entry_price - (atr_multiplier * atr)
         take_profit = entry_price * (1 + target_pct / 100)
         
-        # حساب حجم الصفقة الديناميكي
         position_value = calculate_dynamic_position_size(
             signal_type, self.cash, entry_price, stop_loss, target_pct, alpha
         )
@@ -874,7 +872,7 @@ async def trading_loop():
     last_candidates_sent = time.time()
     print(f"🤖 بدء التداول الورقي المحسّن - {datetime.now()}\n")
     await asyncio.sleep(2)
-    await send_telegram_message("🚀 بوت التداول الورقي (النسخة النهائية الكاملة) بدأ العمل!")
+    await send_telegram_message("🚀 بوت التداول الورقي (النسخة النهائية المخففة) بدأ العمل!")
 
     while True:
         try:
@@ -908,13 +906,13 @@ async def trading_loop():
                     continue
 
                 fs = calculate_filter_score(df)
-                if fs < 30:
+                if fs < 20:  # ⭐ تخفيف: كان 30
                     reject_reasons["filter_score"] += 1
                     continue
 
                 obi = item.get('obi', 0)
                 sp = check_strategies_weighted(df, obi)
-                if sp < 3:
+                if sp < 2:  # ⭐ تخفيف: كان 3
                     reject_reasons["strategy"] += 1
                     continue
 
@@ -961,10 +959,8 @@ async def trading_loop():
                     msg += f"\n⚠️ هذه العملة تحقق {criteria_met}/5 من معايير الانفجار القوي"
                     asyncio.create_task(send_telegram_message(msg))
                     
-                    # فتح صفقة فورية
                     already_open = any(p['symbol'] == cand['symbol'] for p in trader.positions)
                     if not already_open and trader.cash > 50 and len(trader.positions) < trader.max_positions:
-                        # حساب وقف الخسارة والهدف
                         df = cand['df']
                         if df is not None and len(df) > 14:
                             atr_series = manual_atr(df['high'], df['low'], df['close'])
@@ -1006,13 +1002,11 @@ async def trading_loop():
             best = candidates[0]
             print(f"\n🏆 أفضل مرشح: {best['symbol']} | سعر {best['entry_price']:.4f} | ألفا {best['alpha']:.3f} | هدف {best['target_pct']:.2f}%")
             
-            # فتح صفقة على أفضل مرشح إذا كان يستحق ولم تفتح صفقات أخرى كثيرة
             if best['alpha'] >= 2.0 and best['target_pct'] >= 15:
                 already_open = any(p['symbol'] == best['symbol'] for p in trader.positions)
                 if not already_open and trader.cash > 50 and len(trader.positions) < trader.max_positions - 2:
                     trader.open_position(best, exchange_sync, signal_type='alpha')
 
-            # إرسال قائمة الترشيحات كل 18 دقيقة (1080 ثانية)
             if time.time() - last_candidates_sent >= 1080:
                 msg = "📋 أفضل 3 ترشيحات حالياً:\n\n"
                 for i, c in enumerate(candidates[:3], 1):
@@ -1020,7 +1014,6 @@ async def trading_loop():
                 asyncio.create_task(send_telegram_message(msg))
                 last_candidates_sent = time.time()
 
-            # تحديث أسعار الصفقات المفتوحة
             prices = {}
             for pos in trader.positions:
                 try:
@@ -1044,7 +1037,6 @@ async def trading_loop():
                         pass
             tracker.update_candidates(prices)
 
-            # تقرير كل ساعة
             if time.time() - last_report >= 3600:
                 report = trader.generate_report(prices)
                 if report:
@@ -1062,7 +1054,7 @@ async def trading_loop():
                     reject_reasons[key] = 0
                 last_report = time.time()
 
-            await asyncio.sleep(180)  # 3 دقائق
+            await asyncio.sleep(180)
 
         except KeyboardInterrupt:
             print("\n👋 إيقاف...")

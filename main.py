@@ -1,6 +1,6 @@
 """
-نظام التداول الورقي المتكامل - النسخة النهائية مع وقف متحرك ذكي
-التحسينات:
+نظام التداول الورقي المتكامل - النسخة النهائية الكاملة
+التحسينات المدمجة:
 - مؤشر TSI للزخم غير المتأخر
 - فلتر ميل EMA لتأكيد الاختراقات
 - محاكاة OBI باستخدام بيانات Bid/Ask
@@ -8,6 +8,10 @@
 - تأمين الأرباح: نقل الوقف إلى نقطة الدخول عند ربح 2%
 - تجنب العملات مرتفعة الارتفاع (>50% خلال 24 ساعة)
 - آلية إعادة المحاولة (Retry Logic) لموثوقية API
+- إشعار خاص للعملات التي تحقق معايير الانفجار القوي (5/5)
+- نظام تأكيد الزخم عبر 3 دورات متتالية
+- حجم صفقة ديناميكي مرتبط بجودة الإشارة ونسبة الصعود
+- مدة مسح 3 دقائق (استجابة أسرع)
 """
 
 import asyncio
@@ -30,6 +34,13 @@ PUBLIC_CHAT_ID = "-1003692815602"
 PRIVATE_USER_ID = "5067771509"
 
 telegram_app = None
+
+# =========================================================
+# إعدادات التداول
+# =========================================================
+INITIAL_CAPITAL = 1000
+MAX_POSITIONS = 10  # زدنا الحد لاستيعاب تقسيم رأس المال الجديد
+MIN_APPEARANCES = 3  # عدد مرات الظهور للتأكيد
 
 async def send_telegram_message(text: str, to_public: bool = True, to_private: bool = True):
     global telegram_app
@@ -69,10 +80,9 @@ async def send_csv_file(file_path: str, caption: str = ""):
             print(f"خطأ في إرسال ملف إلى {chat_id}: {e}")
 
 # =========================================================
-# آلية إعادة المحاولة (Retry Logic)
+# آلية إعادة المحاولة
 # =========================================================
 async def fetch_with_retry(func, *args, max_retries=3, delay=2, **kwargs):
-    """تنفيذ دالة مع إعادة المحاولة عند الفشل"""
     for attempt in range(max_retries):
         try:
             return await func(*args, **kwargs)
@@ -84,7 +94,7 @@ async def fetch_with_retry(func, *args, max_retries=3, delay=2, **kwargs):
     return None
 
 # =========================================================
-# المؤشرات الفنية (يدوية)
+# المؤشرات الفنية
 # =========================================================
 def manual_ema(series, length):
     return series.ewm(span=length, adjust=False).mean()
@@ -158,6 +168,72 @@ def get_ema_slope(close, length=20, periods=3):
         return 0
     slope = (ema.iloc[-1] - ema.iloc[-periods]) / periods
     return slope
+
+# =========================================================
+# فحص معايير الانفجار القوي
+# =========================================================
+def check_explosion_criteria(candidate):
+    score = 0
+    if candidate.get('filter_score', 0) >= 75:
+        score += 1
+    if candidate.get('alpha', 0) >= 1.8:
+        score += 1
+    if candidate.get('target_pct', 0) >= 18:
+        score += 1
+    eta_bars = candidate.get('eta_bars', 999)
+    if eta_bars and eta_bars <= 48:
+        score += 1
+    if candidate.get('strategy_points', 0) >= 7:
+        score += 1
+    return score >= 5, score
+
+# =========================================================
+# فحص تأكيد الزخم متعدد الدورات
+# =========================================================
+def check_momentum_confirmation(tracker, min_appearances=3):
+    confirmed = []
+    for symbol, count in tracker.appearance_count.items():
+        if count >= min_appearances:
+            for cand in tracker.active_candidates:
+                if cand['symbol'] == symbol and cand['status'] == 'ACTIVE':
+                    confirmed.append(cand)
+                    break
+    return confirmed
+
+# =========================================================
+# حساب حجم الصفقة الديناميكي
+# =========================================================
+def calculate_dynamic_position_size(signal_type, cash, entry_price, stop_loss, target_pct, alpha=0):
+    base_settings = {
+        'explosion': {'risk': 0.04, 'multiplier': 1.5, 'max_value': 180},
+        'momentum':  {'risk': 0.035, 'multiplier': 1.2, 'max_value': 130},
+        'alpha':     {'risk': 0.03, 'multiplier': 1.0, 'max_value': 90}
+    }
+    
+    settings = base_settings.get(signal_type, base_settings['alpha']).copy()
+    
+    if target_pct >= 25:
+        settings['multiplier'] *= 1.2
+    elif target_pct >= 18:
+        settings['multiplier'] *= 1.1
+    
+    if signal_type == 'alpha' and alpha >= 2.5:
+        settings['multiplier'] *= 1.2
+    
+    final_risk = settings['risk'] * settings['multiplier']
+    final_risk = min(final_risk, 0.06)
+    
+    risk_amount = cash * final_risk
+    risk_per_unit = abs(entry_price - stop_loss) / entry_price
+    
+    if risk_per_unit == 0:
+        return 0
+    
+    position_value = risk_amount / risk_per_unit
+    position_value = min(position_value, cash * 0.95)
+    position_value = min(position_value, settings['max_value'])
+    
+    return position_value
 
 # =========================================================
 # الدوال المساعدة
@@ -408,12 +484,13 @@ def detect_market_regime(exchange):
         return {'regime': 'CALM', 'volatility': 0.02}
 
 # =========================================================
-# متتبع الترشيحات
+# متتبع الترشيحات (مع تتبع عدد الظهور)
 # =========================================================
 class CandidateTracker:
     def __init__(self):
         self.candidates_csv = "scan_candidates.csv"
         self.active_candidates = []
+        self.appearance_count = {}
         self._init_csv()
 
     def _init_csv(self):
@@ -426,6 +503,18 @@ class CandidateTracker:
                 ])
 
     def add_candidates(self, candidates_list, scan_time):
+        # تحديث عداد الظهور
+        for cand in candidates_list[:3]:
+            symbol = cand['symbol']
+            self.appearance_count[symbol] = self.appearance_count.get(symbol, 0) + 1
+        
+        # تنظيف العداد للعملات التي لم تعد في القائمة
+        current_symbols = {c['symbol'] for c in candidates_list[:3]}
+        for symbol in list(self.appearance_count.keys()):
+            if symbol not in current_symbols:
+                self.appearance_count[symbol] = 0
+        
+        # تسجيل المرشحين النشطين
         for rank, cand in enumerate(candidates_list[:3], 1):
             record = {
                 'scan_time': scan_time,
@@ -501,14 +590,13 @@ class CandidateTracker:
         self.active_candidates = [c for c in self.active_candidates if c['status'] == 'ACTIVE']
 
 # =========================================================
-# نظام التداول الورقي (مع وقف خسارة متحرك ذكي)
+# نظام التداول الورقي (مع حجم صفقة ديناميكي)
 # =========================================================
 class PaperTrader:
-    def __init__(self, initial_capital=1000, max_positions=5, risk_per_trade=0.04):
+    def __init__(self, initial_capital=1000, max_positions=10):
         self.initial_capital = initial_capital
         self.cash = initial_capital
         self.max_positions = max_positions
-        self.risk_per_trade = risk_per_trade
         self.positions = []
         self.closed_trades = []
         self.data_file = "paper_trader_state.json"
@@ -522,7 +610,7 @@ class PaperTrader:
             with open(self.trades_csv, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
                 writer.writerow(['Symbol', 'Entry Price', 'Exit Price', 'Amount', 'Entry Time', 'Exit Time',
-                                 'PNL ($)', 'PNL (%)', 'Exit Reason', 'Alpha', 'Target %', 'ETA'])
+                                 'PNL ($)', 'PNL (%)', 'Exit Reason', 'Alpha', 'Target %', 'ETA', 'Signal Type'])
         if not os.path.exists(self.report_csv):
             with open(self.report_csv, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
@@ -560,10 +648,11 @@ class PaperTrader:
                 trade['exit_reason'],
                 f"{trade.get('alpha', 0):.3f}",
                 f"{trade.get('target_pct', 0):.2f}",
-                trade.get('eta_str', 'N/A')
+                trade.get('eta_str', 'N/A'),
+                trade.get('signal_type', 'unknown')
             ])
 
-    def open_position(self, signal, exchange):
+    def open_position(self, signal, exchange, signal_type='alpha'):
         symbol = signal['symbol']
         entry_price = signal['entry_price']
         target_pct = signal['target_pct']
@@ -579,26 +668,25 @@ class PaperTrader:
         atr_multiplier = 3.0
         stop_loss = entry_price - (atr_multiplier * atr)
         take_profit = entry_price * (1 + target_pct / 100)
-        signal['stop_loss'] = stop_loss
-        signal['take_profit'] = take_profit
-        signal['atr_value'] = atr
-
-        risk_amount = self.cash * self.risk_per_trade
-        risk_per_unit = abs(entry_price - stop_loss)
-        if risk_per_unit == 0:
+        
+        # حساب حجم الصفقة الديناميكي
+        position_value = calculate_dynamic_position_size(
+            signal_type, self.cash, entry_price, stop_loss, target_pct, alpha
+        )
+        
+        if position_value <= 0:
             return False
-        amount = risk_amount / risk_per_unit
+            
+        amount = position_value / entry_price
+        
         try:
             market = exchange.market(symbol)
             min_amount = market['limits']['amount']['min']
             if amount < min_amount:
                 amount = min_amount
+                position_value = amount * entry_price
         except:
             pass
-        position_value = amount * entry_price
-        if position_value > self.cash * 0.95:
-            amount = (self.cash * 0.95) / entry_price
-            position_value = amount * entry_price
 
         if len(self.positions) >= self.max_positions or position_value > self.cash:
             return False
@@ -619,13 +707,14 @@ class PaperTrader:
             'target_pct': target_pct,
             'eta_str': eta_str,
             'highest_price': entry_price,
-            'atr_value': signal.get('atr_value', entry_price * 0.03),
+            'atr_value': atr,
             'breakeven_activated': False,
-            'current_stop': stop_loss
+            'current_stop': stop_loss,
+            'signal_type': signal_type
         }
         self.positions.append(position)
 
-        msg = (f"🟢 صفقة جديدة: {symbol}\n"
+        msg = (f"🟢 صفقة جديدة ({signal_type}): {symbol}\n"
                f"سعر الدخول: {entry_price:.4f}\n"
                f"قيمة الصفقة: {position_value:.2f}$\n"
                f"كمية: {amount:.4f}\n"
@@ -648,29 +737,23 @@ class PaperTrader:
                 continue
             price = current_prices[symbol]
             
-            # تحديث أعلى سعر
             if price > pos['highest_price']:
                 pos['highest_price'] = price
             
-            # ATR الحالي
             atr_value = pos.get('atr_value', price * 0.03)
             atr_multiplier = 2.5
             
-            # وقف الخسارة المتحرك المعتمد على ATR
             trailing_stop = pos['highest_price'] - (atr_multiplier * atr_value)
             
-            # تأمين الأرباح: نقل الوقف إلى نقطة الدخول عند ربح 2%
             if not pos['breakeven_activated'] and price >= pos['entry_price'] * 1.02:
                 pos['breakeven_activated'] = True
                 trailing_stop = max(trailing_stop, pos['entry_price'])
             
-            # ضمان أن الوقف لا ينخفض أبداً
             if trailing_stop > pos['current_stop']:
                 pos['current_stop'] = trailing_stop
             
             final_stop = pos['current_stop']
             
-            # شروط الإغلاق
             if price <= final_stop:
                 reason = "وقف خسارة متحرك"
                 if pos['breakeven_activated'] and final_stop >= pos['entry_price']:
@@ -702,7 +785,8 @@ class PaperTrader:
             'exit_reason': reason,
             'alpha': pos.get('alpha', 0),
             'target_pct': pos.get('target_pct', 0),
-            'eta_str': pos.get('eta_str', 'N/A')
+            'eta_str': pos.get('eta_str', 'N/A'),
+            'signal_type': pos.get('signal_type', 'unknown')
         }
         self.closed_trades.append(trade_record)
         self._append_trade_to_csv(trade_record)
@@ -763,7 +847,7 @@ class PaperTrader:
         return report
 
 # =========================================================
-# حلقة التداول
+# حلقة التداول الرئيسية
 # =========================================================
 async def trading_loop():
     global exchange_sync_instance, candidate_tracker
@@ -772,7 +856,7 @@ async def trading_loop():
     exchange_sync = ccxt.gateio({'enableRateLimit': True})
     exchange_sync_instance = exchange_sync
 
-    trader = PaperTrader(initial_capital=1000, max_positions=5, risk_per_trade=0.04)
+    trader = PaperTrader(initial_capital=INITIAL_CAPITAL, max_positions=MAX_POSITIONS)
 
     tracker = CandidateTracker()
     candidate_tracker = tracker
@@ -790,7 +874,7 @@ async def trading_loop():
     last_candidates_sent = time.time()
     print(f"🤖 بدء التداول الورقي المحسّن - {datetime.now()}\n")
     await asyncio.sleep(2)
-    await send_telegram_message("🚀 بوت التداول الورقي (النسخة المحسّنة مع وقف متحرك ذكي) بدأ العمل!")
+    await send_telegram_message("🚀 بوت التداول الورقي (النسخة النهائية الكاملة) بدأ العمل!")
 
     while True:
         try:
@@ -804,7 +888,7 @@ async def trading_loop():
             if market_ctx.get('regime') == 'COLD':
                 print("⚠️ السوق بارد (COLD)، تم تخطي فتح الصفقات")
                 reject_reasons["cold_market"] += 1
-                await asyncio.sleep(300)
+                await asyncio.sleep(180)
                 continue
 
             candidates = []
@@ -841,51 +925,102 @@ async def trading_loop():
                 eta_bars = calculate_blended_eta(df, target_price)
                 eta_str = format_eta(eta_bars)
                 final_rank = (alpha * 0.7) + (target_pct / 100 * 0.3)
+                
                 candidates.append({
                     'symbol': item['symbol'],
                     'entry_price': last_price,
                     'alpha': alpha,
                     'target_pct': target_pct,
                     'eta_str': eta_str,
+                    'eta_bars': eta_bars,
                     'final_rank': final_rank,
                     'df': df,
-                    'obi': obi
+                    'obi': obi,
+                    'filter_score': fs,
+                    'strategy_points': sp
                 })
 
             if not candidates:
-                await asyncio.sleep(60)
+                await asyncio.sleep(180)
                 continue
 
             candidates.sort(key=lambda x: x['final_rank'], reverse=True)
 
-            if time.time() - last_candidates_sent >= 1800:
+            # ===== أولوية 1: فحص الانفجار الوشيك =====
+            for cand in candidates[:3]:
+                is_explosive, criteria_met = check_explosion_criteria(cand)
+                if is_explosive:
+                    msg = f"🔥🔥🔥 تنبيه انفجار وشيك 🔥🔥🔥\n\n"
+                    msg += f"{cand['symbol']}\n"
+                    msg += f"سعر الدخول: {cand['entry_price']:.4f}\n"
+                    msg += f"سكور ألفا: {cand['alpha']:.3f}\n"
+                    msg += f"نسبة الصعود: {cand['target_pct']:.2f}%\n"
+                    msg += f"الوقت المتوقع: {cand['eta_str']}\n"
+                    msg += f"نقاط الاستراتيجية: {cand['strategy_points']}/10\n"
+                    msg += f"سكور الفلتر: {cand['filter_score']}/100\n"
+                    msg += f"\n⚠️ هذه العملة تحقق {criteria_met}/5 من معايير الانفجار القوي"
+                    asyncio.create_task(send_telegram_message(msg))
+                    
+                    # فتح صفقة فورية
+                    already_open = any(p['symbol'] == cand['symbol'] for p in trader.positions)
+                    if not already_open and trader.cash > 50 and len(trader.positions) < trader.max_positions:
+                        # حساب وقف الخسارة والهدف
+                        df = cand['df']
+                        if df is not None and len(df) > 14:
+                            atr_series = manual_atr(df['high'], df['low'], df['close'])
+                            atr = atr_series.iloc[-1] if not atr_series.empty else cand['entry_price'] * 0.03
+                        else:
+                            atr = cand['entry_price'] * 0.03
+                        cand['stop_loss'] = cand['entry_price'] - (3.0 * atr)
+                        cand['take_profit'] = cand['entry_price'] * (1 + cand['target_pct'] / 100)
+                        
+                        trader.open_position(cand, exchange_sync, signal_type='explosion')
+
+            # ===== أولوية 2: فحص تأكيد الزخم متعدد الدورات =====
+            for cand in candidates[:3]:
+                df = cand['df']
+                if df is not None and len(df) > 14:
+                    atr_series = manual_atr(df['high'], df['low'], df['close'])
+                    atr = atr_series.iloc[-1] if not atr_series.empty else cand['entry_price'] * 0.03
+                else:
+                    atr = cand['entry_price'] * 0.03
+                cand['stop_loss'] = cand['entry_price'] - (3.0 * atr)
+                cand['take_profit'] = cand['entry_price'] * (1 + cand['target_pct'] / 100)
+
+            tracker.add_candidates(candidates[:3], datetime.now())
+            
+            confirmed_momentum = check_momentum_confirmation(tracker, MIN_APPEARANCES)
+            for cand in confirmed_momentum:
+                msg = f"🚀🚀🚀 تأكيد زخم متعدد الدورات 🚀🚀🚀\n\n"
+                msg += f"{cand['symbol']} ظهرت في أفضل 3 ترشيحات لـ {MIN_APPEARANCES} دورات متتالية!\n"
+                msg += f"سعر الدخول: {cand['entry_price']:.4f}\n"
+                msg += f"نسبة الصعود: {cand['target_pct']:.2f}%\n"
+                msg += f"سكور ألفا: {cand['alpha']:.3f}"
+                asyncio.create_task(send_telegram_message(msg))
+                
+                already_open = any(p['symbol'] == cand['symbol'] for p in trader.positions)
+                if not already_open and trader.cash > 50 and len(trader.positions) < trader.max_positions:
+                    trader.open_position(cand, exchange_sync, signal_type='momentum')
+
+            # ===== أولوية 3: أفضل مرشح (أعلى سكور) =====
+            best = candidates[0]
+            print(f"\n🏆 أفضل مرشح: {best['symbol']} | سعر {best['entry_price']:.4f} | ألفا {best['alpha']:.3f} | هدف {best['target_pct']:.2f}%")
+            
+            # فتح صفقة على أفضل مرشح إذا كان يستحق ولم تفتح صفقات أخرى كثيرة
+            if best['alpha'] >= 2.0 and best['target_pct'] >= 15:
+                already_open = any(p['symbol'] == best['symbol'] for p in trader.positions)
+                if not already_open and trader.cash > 50 and len(trader.positions) < trader.max_positions - 2:
+                    trader.open_position(best, exchange_sync, signal_type='alpha')
+
+            # إرسال قائمة الترشيحات كل 18 دقيقة (1080 ثانية)
+            if time.time() - last_candidates_sent >= 1080:
                 msg = "📋 أفضل 3 ترشيحات حالياً:\n\n"
                 for i, c in enumerate(candidates[:3], 1):
                     msg += f"{i}. {c['symbol']} | سعر: {c['entry_price']:.4f} | ألفا: {c['alpha']:.3f} | هدف: {c['target_pct']:.2f}% | ETA: {c['eta_str']}\n"
                 asyncio.create_task(send_telegram_message(msg))
                 last_candidates_sent = time.time()
 
-            for cand in candidates[:3]:
-                df = cand['df']
-                entry_price = cand['entry_price']
-                if df is not None and len(df) > 14:
-                    atr_series = manual_atr(df['high'], df['low'], df['close'])
-                    atr = atr_series.iloc[-1] if not atr_series.empty else entry_price * 0.03
-                else:
-                    atr = entry_price * 0.03
-                cand['stop_loss'] = entry_price - (3.0 * atr)
-                cand['take_profit'] = entry_price * (1 + cand['target_pct'] / 100)
-
-            tracker.add_candidates(candidates[:3], datetime.now())
-
-            best = candidates[0]
-            print(f"\n🏆 أفضل مرشح: {best['symbol']} | سعر {best['entry_price']:.4f} | ألفا {best['alpha']:.3f} | هدف {best['target_pct']:.2f}% | OBI: {best['obi']:.2f}")
-
-            if trader.cash > 50 and len(trader.positions) < trader.max_positions:
-                trader.open_position(best, exchange_sync)
-            else:
-                reject_reasons["insufficient_cash"] += 1
-
+            # تحديث أسعار الصفقات المفتوحة
             prices = {}
             for pos in trader.positions:
                 try:
@@ -909,10 +1044,11 @@ async def trading_loop():
                         pass
             tracker.update_candidates(prices)
 
+            # تقرير كل ساعة
             if time.time() - last_report >= 3600:
                 report = trader.generate_report(prices)
                 if report:
-                    reject_msg = f"\n📊 أسباب الرفض: حجم شمعة={reject_reasons['volume_spike']}, سكور={reject_reasons['filter_score']}, استراتيجية={reject_reasons['strategy']}, سوق بارد={reject_reasons['cold_market']}, ارتفاع >50%={reject_reasons['high_change_24h']}, رصيد غير كاف={reject_reasons['insufficient_cash']}"
+                    reject_msg = f"\n📊 أسباب الرفض: حجم شمعة={reject_reasons['volume_spike']}, سكور={reject_reasons['filter_score']}, استراتيجية={reject_reasons['strategy']}, سوق بارد={reject_reasons['cold_market']}, ارتفاع >50%={reject_reasons['high_change_24h']}"
                     full_report = report + reject_msg
                     print(full_report)
                     asyncio.create_task(send_telegram_message(full_report))
@@ -926,7 +1062,7 @@ async def trading_loop():
                     reject_reasons[key] = 0
                 last_report = time.time()
 
-            await asyncio.sleep(300)
+            await asyncio.sleep(180)  # 3 دقائق
 
         except KeyboardInterrupt:
             print("\n👋 إيقاف...")

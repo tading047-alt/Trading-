@@ -1,5 +1,5 @@
 """
-نظام التداول الورقي المتكامل - النسخة النهائية
+نظام التداول الورقي المتكامل - النسخة النهائية (مُصلحة)
 - إشعارات إلى قناة عامة ومستخدم خاص
 - بوت Telegram يستجيب للأوامر
 """
@@ -21,11 +21,11 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 # إعدادات تيليجرام
 # =========================================================
 TELEGRAM_TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
-PUBLIC_CHAT_ID = "-1003692815602"  # ⚠️ ضع معرف قناتك هنا (يبدأ بـ -100)
-PRIVATE_USER_ID = "5067771509"     # معرفك الخاص لاستقبال نسخة من الإشعارات
+PUBLIC_CHAT_ID = "-1003692815602"   # معرف قناتك
+PRIVATE_USER_ID = "5067771509"      # معرفك الخاص
 
 # =========================================================
-# متغير عام لتطبيق تيليجرام (تتم تهيئته مرة واحدة)
+# متغير عام لتطبيق تيليجرام (يتم تهيئته في main)
 # =========================================================
 telegram_app = None
 
@@ -37,7 +37,7 @@ async def send_telegram_message(text: str, to_public: bool = True, to_private: b
         return
     
     targets = []
-    if to_public and PUBLIC_CHAT_ID and PUBLIC_CHAT_ID != "-100xxxxxxxxxx":
+    if to_public and PUBLIC_CHAT_ID:
         targets.append(PUBLIC_CHAT_ID)
     if to_private and PRIVATE_USER_ID:
         targets.append(PRIVATE_USER_ID)
@@ -49,7 +49,7 @@ async def send_telegram_message(text: str, to_public: bool = True, to_private: b
             print(f"خطأ في إرسال رسالة إلى {chat_id}: {e}")
 
 # =========================================================
-# المؤشرات الفنية (دون تغيير)
+# المؤشرات الفنية (بدون تغيير)
 # =========================================================
 def manual_ema(series, length):
     return series.ewm(span=length, adjust=False).mean()
@@ -759,6 +759,7 @@ async def download_candidates_command(update: Update, context: ContextTypes.DEFA
         await update.message.reply_text("⚠️ لا يوجد ملف ترشيحات بعد.")
 
 async def run_telegram_bot():
+    """تشغيل بوت تيليجرام (يتم استدعاؤها من main)"""
     global telegram_app
     telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
     telegram_app.add_handler(CommandHandler("start", start_command))
@@ -789,6 +790,7 @@ async def trading_loop():
 
     last_report = time.time()
     print(f"🤖 بدء التداول الورقي - {datetime.now()}\n")
+    await asyncio.sleep(2)  # انتظار قصير لضمان جاهزية telegram_app
     await send_telegram_message("🚀 بوت التداول الورقي بدأ العمل!")
 
     while True:
@@ -890,11 +892,12 @@ async def trading_loop():
     await exchange_async.close()
 
 async def main():
-    # تشغيل بوت تيليجرام وحلقة التداول معًا
-    await asyncio.gather(
-        run_telegram_bot(),
-        trading_loop()
-    )
+    # تشغيل بوت تيليجرام كمهمة خلفية
+    bot_task = asyncio.create_task(run_telegram_bot())
+    # تشغيل حلقة التداول
+    await trading_loop()
+    # إلغاء مهمة البوت عند الخروج
+    bot_task.cancel()
 
 if __name__ == "__main__":
     asyncio.run(main())

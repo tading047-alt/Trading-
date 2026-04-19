@@ -1,13 +1,40 @@
+# =========================
+# 🐍 BASE IMAGE
+# =========================
 FROM python:3.11-slim
 
+# =========================
+# 📁 WORKDIR
+# =========================
 WORKDIR /app
 
-# Copier et installer les dépendances
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# =========================
+# ⚙️ SYSTEM DEPENDENCIES
+# =========================
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copier le script Python
-COPY main.py .
+# =========================
+# 📦 COPY PROJECT
+# =========================
+COPY . /app
 
-# Lancer le bot
+# =========================
+# 📚 INSTALL PYTHON LIBS
+# =========================
+RUN pip install --no-cache-dir \
+    ccxt \
+    pandas \
+    numpy \
+    requests
+
+# =========================
+# 🚀 ENV VARIABLES (optional default)
+# =========================
+ENV PYTHONUNBUFFERED=1
+
+# =========================
+# ▶️ RUN BOT
+# =========================
 CMD ["python", "main.py"]

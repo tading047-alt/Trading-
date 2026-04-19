@@ -10,4 +10,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # تشغيل البوت (الملف اسمه main.py)
-CMD ["python", "main.py"]
+
+CMD ["python", "/app/main.py"]

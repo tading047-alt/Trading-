@@ -21,7 +21,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 # إعدادات تيليجرام
 # =========================================================
 TELEGRAM_TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
-PUBLIC_CHAT_ID = "-100xxxxxxxxxx"  # ⚠️ ضع معرف قناتك هنا (يبدأ بـ -100)
+PUBLIC_CHAT_ID = "-1003692815602"  # ⚠️ ضع معرف قناتك هنا (يبدأ بـ -100)
 PRIVATE_USER_ID = "5067771509"     # معرفك الخاص لاستقبال نسخة من الإشعارات
 
 # =========================================================

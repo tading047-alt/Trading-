@@ -10,4 +10,4 @@ COPY . .
 # سطر للتشخيص: يعرض محتويات المجلد أثناء البناء
 RUN ls -la /app
 
-CMD ["python", "main.py"]
+CMD ["python", "app.py"]

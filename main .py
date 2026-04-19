@@ -18,8 +18,9 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 # =========================================================
 # إعدادات تيليجرام من متغيرات البيئة
 # =========================================================
-TELEGRAM_TOKEN = os.environ.get("8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68", "")
-TELEGRAM_CHAT_ID = os.environ.get("5067771509", "")
+TELEGRAM_TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
+TELEGRAM_CHAT_ID = "5067771509"
+
 
 async def send_telegram_message(text: str):
     """إرسال رسالة إلى القناة المحددة"""

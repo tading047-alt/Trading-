@@ -1,8 +1,12 @@
 """
-نظام التداول الورقي المتكامل - النسخة النهائية
-- إشعارات تلقائية إلى قناة تيليجرام
-- تتبع أفضل 3 مرشحين
-- حفظ CSV للصفقات والتقارير
+نظام التداول الورقي المتكامل مع بوت اكتشاف الانفجار
+- يدعم منصة Gate.io (بيانات حية)
+- رأس مال افتراضي 1000$
+- أقصى عدد صفقات مفتوحة = 10
+- حفظ النتائج في CSV
+- بوت Telegram للأوامر والتحميل
+- تتبع أفضل 3 مرشحين مع تطور النتيجة
+- يعمل بدون مكتبة pandas_ta
 """
 
 import asyncio
@@ -19,21 +23,9 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # =========================================================
-# إعدادات تيليجرام من متغيرات البيئة
+# إعدادات Telegram من متغيرات البيئة
 # =========================================================
-TELEGRAM_TOKEN = "8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68"
-TELEGRAM_CHAT_ID = "5067771509"
-
-async def send_telegram_message(text: str):
-    """إرسال رسالة إلى القناة المحددة"""
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ لم يتم إعداد تيليجرام بشكل كامل")
-        return
-    try:
-        app = Application.builder().token(TELEGRAM_TOKEN).build()
-        await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text)
-    except Exception as e:
-        print(f"خطأ في إرسال رسالة تيليجرام: {e}")
+TELEGRAM_TOKEN = os.environ.get("8439548325:AAHOBBHy7EwcX3J5neIaf6iJuSjyGJCuZ68", "")
 
 # =========================================================
 # المؤشرات الفنية - تنفيذ يدوي كامل
@@ -518,18 +510,18 @@ class PaperTrader:
         }
         self.positions.append(position)
 
-        msg = (f"🟢 صفقة جديدة: {symbol}\n"
-               f"سعر الدخول: {entry_price:.4f}\n"
-               f"قيمة الصفقة: {position_value:.2f}$\n"
-               f"كمية: {amount:.4f}\n"
-               f"🛑 وقف الخسارة: {stop_loss:.4f}\n"
-               f"🎯 جني الأرباح: {take_profit:.4f}\n"
-               f"📈 نسبة الصعود: {target_pct:.2f}%\n"
-               f"⏱️ الوقت المتوقع: {eta_str}\n"
-               f"⭐ سكور ألفا: {alpha:.3f}\n"
-               f"💰 الرصيد المتبقي: {self.cash:.2f}$")
-        print(msg)
-        asyncio.create_task(send_telegram_message(msg))
+        print("\n" + "🔔"*20)
+        print(f"🟢 صفقة جديدة: {symbol}")
+        print(f"   سعر الدخول: {entry_price:.4f}")
+        print(f"   قيمة الصفقة: {position_value:.2f}$")
+        print(f"   كمية: {amount:.4f}")
+        print(f"   🛑 وقف الخسارة: {stop_loss:.4f}")
+        print(f"   🎯 جني الأرباح: {take_profit:.4f}")
+        print(f"   📈 نسبة الصعود: {target_pct:.2f}%")
+        print(f"   ⏱️ الوقت المتوقع: {eta_str}")
+        print(f"   ⭐ سكور ألفا: {alpha:.3f}")
+        print(f"   💰 الرصيد المتبقي: {self.cash:.2f}$")
+        print("🔔"*20 + "\n")
         self.save_state()
         return True
 
@@ -571,9 +563,7 @@ class PaperTrader:
         }
         self.closed_trades.append(trade_record)
         self._append_trade_to_csv(trade_record)
-        msg = f"🔴 إغلاق {pos['symbol']}: {reason} | ربح = {pnl:.2f}$ ({pnl_pct:.2f}%) | الرصيد = {self.cash:.2f}$"
-        print(msg)
-        asyncio.create_task(send_telegram_message(msg))
+        print(f"🔴 إغلاق {pos['symbol']}: {reason} | ربح = {pnl:.2f}$ ({pnl_pct:.2f}%) | الرصيد = {self.cash:.2f}$")
         self.save_state()
 
     def get_stats(self):
@@ -611,7 +601,9 @@ class PaperTrader:
                 f"{stats['win_rate']:.2f}",
                 stats['open_positions']
             ])
-        report = "📊 تقرير الأداء\n"
+        report = "\n" + "="*60 + "\n"
+        report += f"📊 تقرير الأداء - {datetime.now().strftime('%H:%M:%S')}\n"
+        report += "="*60 + "\n"
         report += f"💰 الرصيد: {self.cash:.2f}$ (بداية: {self.initial_capital}$)\n"
         report += f"📈 العائد: {stats['total_pnl']:.2f}$ ({stats['total_return_pct']:.2f}%)\n"
         report += f"📋 صفقات مغلقة: {stats['total_trades']} | ✅ {stats['win_count']} | ❌ {stats['loss_count']}\n"
@@ -625,6 +617,7 @@ class PaperTrader:
                 pnl = (cp - pos['entry_price']) * pos['amount']
                 pnl_pct = ((cp / pos['entry_price']) - 1) * 100
                 report += f"  - {sym}: دخول {pos['entry_price']:.4f} | حالي {cp:.4f} | {pnl:.2f}$ ({pnl_pct:.2f}%)\n"
+        report += "="*60 + "\n"
         return report
 
 # =========================================================
@@ -775,7 +768,6 @@ async def trading_loop():
 
     last_report = time.time()
     print(f"🤖 بدء التداول الورقي - {datetime.now()}\n")
-    await send_telegram_message("🚀 بوت التداول الورقي بدأ العمل!")
 
     while True:
         try:
@@ -860,14 +852,12 @@ async def trading_loop():
             if time.time() - last_report >= 3600:
                 report = trader.generate_report(prices)
                 print(report)
-                asyncio.create_task(send_telegram_message(report))
                 last_report = time.time()
 
             await asyncio.sleep(300)
 
         except KeyboardInterrupt:
             print("\n👋 إيقاف...")
-            await send_telegram_message("⏹️ تم إيقاف البوت.")
             break
         except Exception as e:
             print(f"❌ خطأ: {e}")

@@ -1,7 +1,7 @@
 """
-نظام التداول الورقي المتكامل - النسخة النهائية (مُصلحة)
+نظام التداول الورقي المتكامل - إشعارات تلقائية فقط
 - إشعارات إلى قناة عامة ومستخدم خاص
-- بوت Telegram يستجيب للأوامر
+- بدون أوامر Telegram
 """
 
 import asyncio
@@ -14,8 +14,7 @@ from datetime import datetime
 import json
 import os
 import csv
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application
 
 # =========================================================
 # إعدادات تيليجرام
@@ -25,7 +24,7 @@ PUBLIC_CHAT_ID = "-1003692815602"   # معرف قناتك
 PRIVATE_USER_ID = "5067771509"      # معرفك الخاص
 
 # =========================================================
-# متغير عام لتطبيق تيليجرام (يتم تهيئته في main)
+# متغير عام لتطبيق تيليجرام
 # =========================================================
 telegram_app = None
 
@@ -35,18 +34,42 @@ async def send_telegram_message(text: str, to_public: bool = True, to_private: b
     if not telegram_app or not TELEGRAM_TOKEN:
         print("⚠️ تيليجرام غير مهيأ")
         return
-    
+
     targets = []
     if to_public and PUBLIC_CHAT_ID:
         targets.append(PUBLIC_CHAT_ID)
     if to_private and PRIVATE_USER_ID:
         targets.append(PRIVATE_USER_ID)
-    
+
     for chat_id in targets:
         try:
             await telegram_app.bot.send_message(chat_id=chat_id, text=text)
         except Exception as e:
             print(f"خطأ في إرسال رسالة إلى {chat_id}: {e}")
+
+async def send_csv_file(file_path: str, caption: str = ""):
+    """إرسال ملف CSV إلى القناة والمستخدم الخاص"""
+    global telegram_app
+    if not telegram_app or not os.path.exists(file_path):
+        return
+
+    targets = []
+    if PUBLIC_CHAT_ID:
+        targets.append(PUBLIC_CHAT_ID)
+    if PRIVATE_USER_ID:
+        targets.append(PRIVATE_USER_ID)
+
+    for chat_id in targets:
+        try:
+            with open(file_path, 'rb') as f:
+                await telegram_app.bot.send_document(
+                    chat_id=chat_id,
+                    document=f,
+                    filename=os.path.basename(file_path),
+                    caption=caption
+                )
+        except Exception as e:
+            print(f"خطأ في إرسال ملف إلى {chat_id}: {e}")
 
 # =========================================================
 # المؤشرات الفنية (بدون تغيير)
@@ -149,10 +172,10 @@ async def lightning_scan(exchange, min_volume=500000, min_volatility=0.025):
     markets = await exchange.load_markets()
     symbols = [s for s in markets if s.endswith('/USDT') and '.d' not in s]
     print(f"⚡ بدء المسح الخاطف لـ {len(symbols)} عملة...")
-    
+
     tasks = [fetch_ticker_fast(exchange, sym) for sym in symbols]
     results = await asyncio.gather(*tasks)
-    
+
     passed = []
     for r in results:
         if r is None or r['close'] <= 0:
@@ -404,7 +427,7 @@ class CandidateTracker:
                 self._write_record(cand)
         self.active_candidates = [c for c in self.active_candidates if c['status'] == 'ACTIVE']
 
-    def get_recent(self, limit=5):
+    def get_recent(self, limit=3):
         if not os.path.exists(self.candidates_csv):
             return []
         df = pd.read_csv(self.candidates_csv)
@@ -431,12 +454,12 @@ class PaperTrader:
         if not os.path.exists(self.trades_csv):
             with open(self.trades_csv, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
-                writer.writerow(['Symbol', 'Entry Price', 'Exit Price', 'Amount', 'Entry Time', 'Exit Time', 
+                writer.writerow(['Symbol', 'Entry Price', 'Exit Price', 'Amount', 'Entry Time', 'Exit Time',
                                  'PNL ($)', 'PNL (%)', 'Exit Reason', 'Alpha', 'Target %', 'ETA'])
         if not os.path.exists(self.report_csv):
             with open(self.report_csv, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
-                writer.writerow(['Timestamp', 'Cash', 'Total PNL', 'Return %', 'Total Trades', 
+                writer.writerow(['Timestamp', 'Cash', 'Total PNL', 'Return %', 'Total Trades',
                                  'Wins', 'Losses', 'Win Rate %', 'Open Positions'])
 
     def load_state(self):
@@ -610,7 +633,7 @@ class PaperTrader:
     def generate_report(self, current_prices=None):
         stats = self.get_stats()
         if not stats:
-            return "📊 لا توجد صفقات مكتملة بعد."
+            return None
         with open(self.report_csv, 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow([
@@ -648,131 +671,6 @@ exchange_sync_instance = None
 candidate_tracker = None
 
 # =========================================================
-# بوت Telegram (الأوامر)
-# =========================================================
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 بوت التداول الورقي\n\n"
-        "الأوامر المتاحة:\n"
-        "/status - عرض ملخص الحساب والصفقات المفتوحة\n"
-        "/download_trades - تحميل ملف CSV للصفقات المغلقة\n"
-        "/download_report - تحميل ملف CSV للتقرير الدوري\n"
-        "/force_report - إنشاء تقرير فوري وحفظه\n"
-        "/candidates - عرض آخر ترشيحات\n"
-        "/download_candidates - تحميل ملف CSV للترشيحات"
-    )
-
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if trader_instance is None:
-        await update.message.reply_text("⚠️ نظام التداول غير مهيأ بعد.")
-        return
-    prices = {}
-    if exchange_sync_instance:
-        for pos in trader_instance.positions:
-            try:
-                ticker = exchange_sync_instance.fetch_ticker(pos['symbol'])
-                prices[pos['symbol']] = ticker['last']
-            except:
-                prices[pos['symbol']] = pos['entry_price']
-    stats = trader_instance.get_stats()
-    if stats:
-        msg = f"💰 الرصيد: {trader_instance.cash:.2f}$\n"
-        msg += f"📈 العائد الإجمالي: {stats['total_pnl']:.2f}$ ({stats['total_return_pct']:.2f}%)\n"
-        msg += f"📋 صفقات مغلقة: {stats['total_trades']} | ✅ {stats['win_count']} | ❌ {stats['loss_count']}\n"
-        msg += f"🎯 نسبة النجاح: {stats['win_rate']:.2f}%\n"
-        msg += f"🔓 صفقات مفتوحة: {stats['open_positions']}\n"
-        if trader_instance.positions:
-            msg += "\n📌 الصفقات المفتوحة:\n"
-            for pos in trader_instance.positions:
-                sym = pos['symbol']
-                cp = prices.get(sym, pos['entry_price'])
-                pnl = (cp - pos['entry_price']) * pos['amount']
-                pnl_pct = ((cp / pos['entry_price']) - 1) * 100
-                msg += f"  - {sym}: {pos['entry_price']:.4f} → {cp:.4f} | {pnl:.2f}$ ({pnl_pct:.2f}%)\n"
-    else:
-        msg = f"💰 الرصيد: {trader_instance.cash:.2f}$\n🔓 صفقات مفتوحة: {len(trader_instance.positions)}"
-    await update.message.reply_text(msg)
-
-async def download_trades_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if trader_instance is None:
-        await update.message.reply_text("⚠️ نظام التداول غير مهيأ.")
-        return
-    csv_file = trader_instance.trades_csv
-    if os.path.exists(csv_file):
-        with open(csv_file, 'rb') as f:
-            await update.message.reply_document(document=f, filename="closed_trades.csv", caption="📁 ملف الصفقات المغلقة")
-    else:
-        await update.message.reply_text("⚠️ لا يوجد ملف للصفقات بعد.")
-
-async def download_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if trader_instance is None:
-        await update.message.reply_text("⚠️ نظام التداول غير مهيأ.")
-        return
-    csv_file = trader_instance.report_csv
-    if os.path.exists(csv_file):
-        with open(csv_file, 'rb') as f:
-            await update.message.reply_document(document=f, filename="hourly_report.csv", caption="📁 ملف التقارير الدورية")
-    else:
-        await update.message.reply_text("⚠️ لا يوجد ملف تقارير بعد.")
-
-async def force_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if trader_instance is None:
-        await update.message.reply_text("⚠️ نظام التداول غير مهيأ.")
-        return
-    prices = {}
-    if exchange_sync_instance:
-        for pos in trader_instance.positions:
-            try:
-                ticker = exchange_sync_instance.fetch_ticker(pos['symbol'])
-                prices[pos['symbol']] = ticker['last']
-            except:
-                prices[pos['symbol']] = pos['entry_price']
-    report = trader_instance.generate_report(prices)
-    await update.message.reply_text(report[:4000])
-
-async def candidates_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if candidate_tracker is None:
-        await update.message.reply_text("⚠️ نظام التتبع غير مهيأ.")
-        return
-    recent = candidate_tracker.get_recent(5)
-    if not recent:
-        await update.message.reply_text("📭 لا توجد ترشيحات مسجلة بعد.")
-        return
-    msg = "📋 آخر 5 ترشيحات:\n\n"
-    for r in recent:
-        msg += f"{r['Symbol']} (مرتبة {r['Rank']}) - {r['Status']}\n"
-        msg += f"  دخول: {r['Entry Price']} | هدف: {r['Take Profit']} | وقف: {r['Stop Loss']}\n"
-        if r['Result'] and pd.notna(r['Result']):
-            msg += f"  نتيجة: {r['Result']} ({r['PNL %']}%)\n"
-        msg += "\n"
-    await update.message.reply_text(msg)
-
-async def download_candidates_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if candidate_tracker is None:
-        await update.message.reply_text("⚠️ نظام التتبع غير مهيأ.")
-        return
-    csv_file = candidate_tracker.candidates_csv
-    if os.path.exists(csv_file):
-        with open(csv_file, 'rb') as f:
-            await update.message.reply_document(document=f, filename="scan_candidates.csv", caption="📁 ملف ترشيحات العملات وتطور نتائجها")
-    else:
-        await update.message.reply_text("⚠️ لا يوجد ملف ترشيحات بعد.")
-
-async def run_telegram_bot():
-    """تشغيل بوت تيليجرام (يتم استدعاؤها من main)"""
-    global telegram_app
-    telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
-    telegram_app.add_handler(CommandHandler("start", start_command))
-    telegram_app.add_handler(CommandHandler("status", status_command))
-    telegram_app.add_handler(CommandHandler("download_trades", download_trades_command))
-    telegram_app.add_handler(CommandHandler("download_report", download_report_command))
-    telegram_app.add_handler(CommandHandler("force_report", force_report_command))
-    telegram_app.add_handler(CommandHandler("candidates", candidates_command))
-    telegram_app.add_handler(CommandHandler("download_candidates", download_candidates_command))
-    print("🤖 بوت Telegram قيد التشغيل...")
-    await telegram_app.run_polling()
-
-# =========================================================
 # حلقة التداول
 # =========================================================
 async def trading_loop():
@@ -789,8 +687,9 @@ async def trading_loop():
     candidate_tracker = tracker
 
     last_report = time.time()
+    last_candidates_sent = time.time()
     print(f"🤖 بدء التداول الورقي - {datetime.now()}\n")
-    await asyncio.sleep(2)  # انتظار قصير لضمان جاهزية telegram_app
+    await asyncio.sleep(2)
     await send_telegram_message("🚀 بوت التداول الورقي بدأ العمل!")
 
     while True:
@@ -835,6 +734,14 @@ async def trading_loop():
 
             candidates.sort(key=lambda x: x['final_rank'], reverse=True)
 
+            # إرسال قائمة الترشيحات (أفضل 3) كل 30 دقيقة
+            if time.time() - last_candidates_sent >= 1800:
+                msg = "📋 أفضل 3 ترشيحات حالياً:\n\n"
+                for i, c in enumerate(candidates[:3], 1):
+                    msg += f"{i}. {c['symbol']} | سعر: {c['entry_price']:.4f} | ألفا: {c['alpha']:.3f} | هدف: {c['target_pct']:.2f}% | ETA: {c['eta_str']}\n"
+                asyncio.create_task(send_telegram_message(msg))
+                last_candidates_sent = time.time()
+
             for cand in candidates[:3]:
                 df = cand['df']
                 entry_price = cand['entry_price']
@@ -875,8 +782,16 @@ async def trading_loop():
 
             if time.time() - last_report >= 3600:
                 report = trader.generate_report(prices)
-                print(report)
-                asyncio.create_task(send_telegram_message(report))
+                if report:
+                    print(report)
+                    asyncio.create_task(send_telegram_message(report))
+                # إرسال ملفات CSV كل ساعة
+                if os.path.exists(trader.trades_csv):
+                    asyncio.create_task(send_csv_file(trader.trades_csv, "📁 صفقات مغلقة"))
+                if os.path.exists(trader.report_csv):
+                    asyncio.create_task(send_csv_file(trader.report_csv, "📁 تقرير الأداء"))
+                if os.path.exists(tracker.candidates_csv):
+                    asyncio.create_task(send_csv_file(tracker.candidates_csv, "📁 ترشيحات العملات"))
                 last_report = time.time()
 
             await asyncio.sleep(300)
@@ -892,12 +807,15 @@ async def trading_loop():
     await exchange_async.close()
 
 async def main():
-    # تشغيل بوت تيليجرام كمهمة خلفية
-    bot_task = asyncio.create_task(run_telegram_bot())
-    # تشغيل حلقة التداول
+    global telegram_app
+    # تهيئة تطبيق تيليجرام (لإرسال الرسائل فقط، بدون أوامر)
+    telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
+    await telegram_app.initialize()
+    print("🤖 تطبيق Telegram جاهز للإرسال...")
+
     await trading_loop()
-    # إلغاء مهمة البوت عند الخروج
-    bot_task.cancel()
+
+    await telegram_app.shutdown()
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -1,10 +1,13 @@
 """
-نظام التداول الورقي المتكامل - الإصدار النهائي المُصلح
-=============================================
-تم الإصلاح:
-- تعديل دالة main لتجنب تعارض asyncio مع Telegram
-- فصل بوت تيليجرام عن حلقة التداول بشكل آمن
-- إضافة معالجة أخطاء أفضل
+نظام التداول الورقي المتكامل - الإصدار النهائي مع المسح فائق السرعة
+============================================================
+التحسينات المطبقة:
+- مسح متوازي كامل (بدون دفعات)
+- فلترة مسبقة معززة (تغير السعر والحجم في 5 دقائق)
+- نظام أولويات لتحليل العملات الساخنة أولاً
+- تصنيف ذكي Gold/Silver/Bronze
+- مراقبة API لمنع الحظر
+- تحديث أسعار كل دقيقة
 """
 
 import asyncio
@@ -38,12 +41,16 @@ MAX_POSITIONS = float('inf')
 MIN_APPEARANCES = 2
 TOP_CANDIDATES_COUNT = 5
 
-# إعدادات المسح
-BATCH_SIZE = 100
-BATCH_DELAY = 2.5
-SYMBOLS_PER_CYCLE = 500
-SCAN_INTERVAL = 1800
-PRICE_UPDATE_INTERVAL = 60
+# ⭐ إعدادات المسح الجديد
+GOLD_SCAN_INTERVAL = 180    # 3 دقائق للذهب (أسرع!)
+SILVER_SCAN_INTERVAL = 600  # 10 دقائق للفضة
+BRONZE_SCAN_INTERVAL = 1800 # 30 دقيقة للبرونز
+
+GOLD_COUNT = 80     # أفضل 80 عملة
+SILVER_COUNT = 200  # 200 عملة متوسطة
+BRONZE_COUNT = 500  # 500 عملة برونزية
+
+PRICE_UPDATE_INTERVAL = 30  # تحديث الأسعار كل 30 ثانية
 
 # عتبات تقييم النتائج
 FAIL_THRESHOLD = -0.03
@@ -63,9 +70,29 @@ is_paused = False
 pause_until_time = None
 auto_paused_reason = None
 
-# متغيرات المسح
-current_cycle = 1
+# متغيرات عامة
 all_symbols = []
+gold_symbols = []
+silver_symbols = []
+bronze_symbols = []
+symbol_classification_time = 0
+
+# ⭐ التخزين المؤقت للتحليل
+analysis_cache = {}
+
+# ⭐ مراقبة API
+api_requests_count = 0
+api_requests_reset_time = time.time()
+
+def can_make_request():
+    global api_requests_count, api_requests_reset_time
+    if time.time() - api_requests_reset_time >= 60:
+        api_requests_count = 0
+        api_requests_reset_time = time.time()
+    if api_requests_count >= 180:  # زيادة الحد لأن المسح أسرع
+        return False
+    api_requests_count += 1
+    return True
 
 # =========================================================
 # دوال تيليجرام
@@ -238,39 +265,21 @@ def check_explosion_criteria(candidate):
 # =========================================================
 def check_good_coin_criteria(candidate):
     criteria_met = []
-    missing = []
     
     if candidate.get('filter_score', 0) >= 35:
         criteria_met.append("سكور فلتر ≥ 35")
-    else:
-        missing.append(f"سكور فلتر ({candidate.get('filter_score', 0)})")
-    
     if candidate.get('alpha', 0) >= 1.0:
         criteria_met.append("سكور ألفا ≥ 1.0")
-    else:
-        missing.append(f"سكور ألفا ({candidate.get('alpha', 0):.3f})")
-    
     if candidate.get('target_pct', 0) >= 8:
         criteria_met.append("هدف ≥ 8%")
-    else:
-        missing.append(f"هدف ({candidate.get('target_pct', 0):.1f}%)")
-    
     if candidate.get('strategy_points', 0) >= 2:
         criteria_met.append("نقاط استراتيجية ≥ 2")
-    else:
-        missing.append(f"نقاط استراتيجية ({candidate.get('strategy_points', 0)})")
-    
     if candidate.get('volume_confirm', False):
         criteria_met.append("تأكيد حجم ✅")
-    else:
-        missing.append("تأكيد حجم ❌")
-    
     if candidate.get('trend_confirm', False):
         criteria_met.append("تأكيد اتجاه ✅")
-    else:
-        missing.append("تأكيد اتجاه ❌")
     
-    return len(criteria_met) >= 4, criteria_met, missing
+    return len(criteria_met) >= 4, criteria_met
 
 # =========================================================
 # تأكيد الزخم متعدد الدورات
@@ -331,8 +340,6 @@ def calculate_kelly_position_size(cash, win_rate, avg_win_pct, avg_loss_pct, bas
 # تنبيهات الانحرافات
 # =========================================================
 def check_anomalies(trader):
-    global is_paused, auto_paused_reason
-    
     if len(trader.closed_trades) < 5:
         return False, None
     
@@ -378,25 +385,159 @@ def fetch_ohlcv_sync(exchange, symbol, timeframe='5m', limit=40):
     except:
         return pd.DataFrame()
 
-async def fetch_ticker_fast(exchange, symbol):
-    try:
-        ticker = await exchange.fetch_ticker(symbol)
-        if not ticker:
+# ⭐ حساب أولوية العملة
+def calculate_priority(item):
+    """حساب أولوية العملة للتحليل - الأعلى أولاً"""
+    priority = 0
+    
+    # تغير السعر في 5 دقائق (أهم عامل)
+    price_change = item.get('price_change_5m', 0)
+    if abs(price_change) > 0.02:
+        priority += 5
+    elif abs(price_change) > 0.01:
+        priority += 3
+    elif abs(price_change) > 0.005:
+        priority += 1
+    
+    # تغير الحجم
+    volume_change = item.get('volume_change_5m', 1)
+    if volume_change > 4:
+        priority += 4
+    elif volume_change > 2.5:
+        priority += 2
+    elif volume_change > 1.5:
+        priority += 1
+    
+    # قرب من قمة 24 ساعة
+    if item.get('close', 0) > item.get('high_24h', 0) * 0.97:
+        priority += 3
+    elif item.get('close', 0) > item.get('high_24h', 0) * 0.95:
+        priority += 1
+    
+    # حجم تداول 24 ساعة كبير
+    if item.get('volume_24h', 0) > 10_000_000:
+        priority += 2
+    elif item.get('volume_24h', 0) > 5_000_000:
+        priority += 1
+    
+    # تقلب عالي
+    if item.get('volatility', 0) > 0.05:
+        priority += 2
+    elif item.get('volatility', 0) > 0.03:
+        priority += 1
+    
+    return priority
+
+# ⭐ تصنيف العملات
+async def classify_symbols(exchange, symbols):
+    """تصنيف العملات بناءً على الحجم والتقلب"""
+    gold, silver, bronze = [], [], []
+    
+    print(f"📊 جاري تصنيف {len(symbols)} عملة...")
+    
+    # مسح متوازي كامل
+    tasks = [exchange.fetch_ticker(sym) for sym in symbols]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    for sym, res in zip(symbols, results):
+        if isinstance(res, Exception) or res is None:
+            bronze.append(sym)
+            continue
+        
+        volume = res.get('quoteVolume', 0) or 0
+        high = res.get('high', 0) or 0
+        low = res.get('low', 0) or 0
+        close = res.get('close', 0) or 1
+        volatility = (high - low) / close if close > 0 else 0
+        
+        if volume > 5_000_000 and volatility > 0.03:
+            gold.append(sym)
+        elif volume > 1_000_000 and volatility > 0.02:
+            silver.append(sym)
+        else:
+            bronze.append(sym)
+    
+    print(f"✅ تصنيف: 🥇 Gold={len(gold)}, 🥈 Silver={len(silver)}, 🥉 Bronze={len(bronze)}")
+    return gold, silver, bronze
+
+# ⭐ فلترة مسبقة معززة مع أولويات
+async def enhanced_quick_filter(exchange, symbols, tier_name):
+    """فلترة مسبقة معززة - تركز على العملات التي تتحرك الآن"""
+    
+    if not can_make_request():
+        await asyncio.sleep(1)
+    
+    # ⭐ المسح المتوازي - جلب ticker + شمعة 5 دقائق معاً
+    async def fetch_symbol_data(symbol):
+        try:
+            ticker = await exchange.fetch_ticker(symbol)
+            ohlcv = await exchange.fetch_ohlcv(symbol, '5m', limit=2)
+            
+            if len(ohlcv) < 2:
+                return None
+            
+            last_candle = ohlcv[-1]
+            prev_candle = ohlcv[-2]
+            
+            close = ticker.get('close', 0)
+            high_24h = ticker.get('high', 0)
+            low_24h = ticker.get('low', 0)
+            volume_24h = ticker.get('quoteVolume', 0) or 0
+            
+            # حساب التغيرات
+            price_change_5m = (last_candle[4] - prev_candle[4]) / prev_candle[4] if prev_candle[4] > 0 else 0
+            volume_change_5m = last_candle[5] / prev_candle[5] if prev_candle[5] > 0 else 1
+            
+            # فلتر أساسي سريع
+            if volume_24h < 200000:
+                return None
+            if close > 0 and (high_24h - low_24h) / close < 0.015:
+                return None
+            
+            change_24h = ticker.get('percentage', 0) or 0
+            if change_24h < -10 or change_24h > 40:
+                return None
+            
+            bid = ticker.get('bid', 0) or 0
+            ask = ticker.get('ask', 0) or 0
+            if ask > 0 and (ask - bid) / ask > 0.005:
+                return None
+            
+            # ⭐ فلتر معزز: تحرك السعر > 0.3% أو حجم > 1.3x في آخر 5 دقائق
+            if abs(price_change_5m) < 0.003 and volume_change_5m < 1.3:
+                return None  # العملة خاملة، تجاهلها
+            
+            return {
+                'symbol': symbol,
+                'close': close,
+                'high_24h': high_24h,
+                'low_24h': low_24h,
+                'volume_24h': volume_24h,
+                'volatility': (high_24h - low_24h) / close if close > 0 else 0,
+                'price_change_5m': price_change_5m,
+                'volume_change_5m': volume_change_5m,
+                'change_24h': change_24h,
+                'obi': 0
+            }
+        except:
             return None
-        bid_volume = ticker.get('bidVolume', 0) or 0
-        ask_volume = ticker.get('askVolume', 0) or 0
-        obi = (bid_volume - ask_volume) / (bid_volume + ask_volume) if (bid_volume + ask_volume) > 0 else 0
-        return {
-            'symbol': symbol,
-            'volume_24h': ticker.get('quoteVolume', 0) or 0,
-            'high': ticker.get('high', 0) or 0,
-            'low': ticker.get('low', 0) or 0,
-            'close': ticker.get('close', 0) or 0,
-            'obi': obi,
-            'change_24h': ticker.get('percentage', 0) or 0
-        }
-    except:
-        return None
+    
+    # مسح متوازي لجميع العملات دفعة واحدة
+    tasks = [fetch_symbol_data(sym) for sym in symbols]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    passed = []
+    for res in results:
+        if res is not None and not isinstance(res, Exception):
+            # حساب الأولوية
+            res['priority'] = calculate_priority(res)
+            passed.append(res)
+    
+    # ⭐ ترتيب حسب الأولوية (الأعلى أولاً)
+    passed.sort(key=lambda x: x['priority'], reverse=True)
+    
+    print(f"   {tier_name}: {len(passed)} عملة اجتازت الفلترة (من {len(symbols)})")
+    return passed
 
 # =========================================================
 # حساب السكور والمؤشرات
@@ -625,10 +766,11 @@ class CandidateTracker:
                 writer.writerow([
                     'Scan Time', 'Symbol', 'Rank', 'Entry Price', 'Current Price', 'Change %',
                     'Highest Price', 'Lowest Price', 'Stop Loss', 'Take Profit', 'Target %', 'Alpha',
-                    'Filter Score', 'Strategy Points', 'Status', 'Close Time', 'Evaluation', 'Virtual PNL %'
+                    'Filter Score', 'Strategy Points', 'Tier', 'Priority', 'Status', 'Close Time', 
+                    'Evaluation', 'Virtual PNL %'
                 ])
 
-    def add_candidates(self, candidates_list, scan_time):
+    def add_candidates(self, candidates_list, scan_time, tier="Gold"):
         for cand in candidates_list[:TOP_CANDIDATES_COUNT]:
             symbol = cand['symbol']
             self.appearance_count[symbol] = self.appearance_count.get(symbol, 0) + 1
@@ -655,6 +797,8 @@ class CandidateTracker:
                 'alpha': cand.get('alpha', 0),
                 'filter_score': cand.get('filter_score', 0),
                 'strategy_points': cand.get('strategy_points', 0),
+                'tier': tier,
+                'priority': cand.get('priority', 0),
                 'status': 'ACTIVE',
                 'close_time': None,
                 'evaluation': 'PENDING',
@@ -681,8 +825,8 @@ class CandidateTracker:
                         cand['lowest_price'] = current_price
                     
                     updated_count += 1
-            except Exception as e:
-                print(f"⚠️ خطأ في تحديث سعر {cand['symbol']}: {e}")
+            except:
+                pass
         
         if updated_count > 0:
             print(f"📊 تم تحديث أسعار {updated_count} عملة مرشحة")
@@ -720,7 +864,6 @@ class CandidateTracker:
                 cand['evaluation'] = 'EXPIRED'
                 cand['virtual_pnl'] = cand['change_pct']
                 self._write_record(cand)
-                print(f"⏰ {cand['symbol']} انتهت صلاحيتها")
             else:
                 cand['evaluation'] = 'PENDING'
                 cand['virtual_pnl'] = cand['change_pct']
@@ -746,6 +889,8 @@ class CandidateTracker:
                 f"{record['alpha']:.3f}",
                 record['filter_score'],
                 record['strategy_points'],
+                record['tier'],
+                record['priority'],
                 record['status'],
                 record['close_time'].isoformat() if record['close_time'] else '',
                 record['evaluation'],
@@ -1028,7 +1173,7 @@ class PaperTrader:
         return report
 
 # =========================================================
-# أوامر الإيقاف المؤقت
+# أوامر تيليجرام
 # =========================================================
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_paused, auto_paused_reason, trader_instance
@@ -1052,55 +1197,166 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 # =========================================================
-# المسح والتحليل
+# دالة تحليل مجموعة عملات (مع أولويات)
 # =========================================================
-async def batched_lightning_scan(exchange, symbols_to_scan, min_volume=200000, min_volatility=0.015):
-    print(f"⚡ بدء المسح لـ {len(symbols_to_scan)} عملة...")
+async def analyze_symbols_with_priority(exchange_sync, filtered_items, market_ctx, tier_name, max_to_analyze=30):
+    """تحليل العملات مع نظام الأولويات - يحلل العملات ذات الأولوية العليا أولاً"""
+    
+    candidates = []
+    
+    # ⭐ تحليل العملات حسب الأولوية (نحلل فقط أفضل 30 عملة لتوفير الوقت)
+    items_to_analyze = filtered_items[:max_to_analyze]
+    
+    for item in items_to_analyze:
+        df = fetch_ohlcv_sync(exchange_sync, item['symbol'], '5m', 40)
+        if df.empty:
+            continue
 
-    passed = []
-    total_batches = (len(symbols_to_scan) + BATCH_SIZE - 1) // BATCH_SIZE
+        last_volume = df['volume'].iloc[-1]
+        avg_volume_20 = df['volume'].rolling(20).mean().iloc[-1]
+        if pd.isna(avg_volume_20) or last_volume < avg_volume_20 * 1.5:
+            continue
 
-    for batch_num in range(total_batches):
-        start_idx = batch_num * BATCH_SIZE
-        end_idx = min(start_idx + BATCH_SIZE, len(symbols_to_scan))
-        batch_symbols = symbols_to_scan[start_idx:end_idx]
+        fs, _ = calculate_filter_score(df)
+        if fs < 15:
+            continue
 
-        tasks = [fetch_ticker_fast(exchange, sym) for sym in batch_symbols]
-        results = await asyncio.gather(*tasks)
+        obi = item.get('obi', 0)
+        sp, _ = check_strategies_weighted(df, obi)
+        if sp < 1:
+            continue
 
-        for r in results:
-            if r is None or r['close'] <= 0:
-                continue
-            volatility = (r['high'] - r['low']) / r['close'] if r['close'] > 0 else 0
-            if r['change_24h'] > 50:
-                continue
-            if r['volume_24h'] >= min_volume and volatility >= min_volatility:
-                r['volatility'] = volatility
-                passed.append(r)
+        vol_confirm, _ = check_volume_confirmation(df)
+        if not vol_confirm:
+            continue
 
-        print(f"   ✅ دفعة {batch_num+1}/{total_batches} ({len(passed)} عملة)")
+        trend_confirm, _ = check_trend_confirmation(df)
+        if not trend_confirm:
+            continue
 
-        if batch_num < total_batches - 1:
-            await asyncio.sleep(BATCH_DELAY)
+        alpha, _ = calculate_enhanced_alpha(df, market_ctx, obi)
+        target_pct = calculate_target_percentage(df)
+        last_price = df['close'].iloc[-1]
+        target_price = last_price * (1 + target_pct / 100)
+        eta_bars = calculate_blended_eta(df, target_price)
+        eta_str = format_eta(eta_bars)
+        final_rank = (alpha * 0.7) + (target_pct / 100 * 0.3)
 
-    print(f"✅ اكتمل المسح: {len(passed)} عملة")
-    return passed
+        cand = {
+            'symbol': item['symbol'],
+            'entry_price': last_price,
+            'alpha': alpha,
+            'target_pct': target_pct,
+            'eta_str': eta_str,
+            'eta_bars': eta_bars,
+            'final_rank': final_rank,
+            'df': df,
+            'obi': obi,
+            'filter_score': fs,
+            'strategy_points': sp,
+            'volume_confirm': vol_confirm,
+            'trend_confirm': trend_confirm,
+            'tier': tier_name,
+            'priority': item.get('priority', 0)
+        }
+        candidates.append(cand)
+    
+    candidates.sort(key=lambda x: x['final_rank'], reverse=True)
+    return candidates[:TOP_CANDIDATES_COUNT]
+
+# =========================================================
+# دالة معالجة المرشحين وفتح الصفقات
+# =========================================================
+async def process_candidates(candidates, trader, exchange_sync, tracker, tier_name):
+    positions_opened = 0
+    MAX_POSITIONS_PER_SCAN = 3 if tier_name == "Gold" else 2  # زيادة لـ Gold
+    
+    # أولوية 1: انفجار وشيك
+    for cand in candidates:
+        if positions_opened >= MAX_POSITIONS_PER_SCAN:
+            break
+        is_explosive, criteria_met, _ = check_explosion_criteria(cand)
+        if is_explosive:
+            msg = f"🔥🔥🔥 انفجار وشيك! ({tier_name})\n{cand['symbol']}\nسعر: {cand['entry_price']:.4f}\nألفا: {cand['alpha']:.3f}\nهدف: {cand['target_pct']:.2f}%\n✅ {criteria_met}/5 معايير"
+            asyncio.create_task(send_telegram_message(msg))
+
+            already_open = any(p['symbol'] == cand['symbol'] for p in trader.positions)
+            if not already_open and trader.cash > 50:
+                df = cand['df']
+                if df is not None and len(df) > 14:
+                    atr_series = manual_atr(df['high'], df['low'], df['close'])
+                    atr = atr_series.iloc[-1] if not atr_series.empty else cand['entry_price'] * 0.03
+                else:
+                    atr = cand['entry_price'] * 0.03
+                cand['stop_loss'] = cand['entry_price'] - (2.5 * atr)
+                cand['take_profit'] = cand['entry_price'] * (1 + cand['target_pct'] / 100)
+
+                if trader.open_position(cand, exchange_sync, signal_type='explosion'):
+                    positions_opened += 1
+
+    # تحضير للتأكيد متعدد الدورات
+    for cand in candidates:
+        df = cand['df']
+        if df is not None and len(df) > 14:
+            atr_series = manual_atr(df['high'], df['low'], df['close'])
+            atr = atr_series.iloc[-1] if not atr_series.empty else cand['entry_price'] * 0.03
+        else:
+            atr = cand['entry_price'] * 0.03
+        cand['stop_loss'] = cand['entry_price'] - (2.5 * atr)
+        cand['take_profit'] = cand['entry_price'] * (1 + cand['target_pct'] / 100)
+
+    confirmed_momentum = check_momentum_confirmation(tracker, MIN_APPEARANCES)
+    for cand in confirmed_momentum:
+        if positions_opened >= MAX_POSITIONS_PER_SCAN:
+            break
+        if cand.get('tier') != tier_name:
+            continue
+            
+        msg = f"🚀🚀🚀 تأكيد زخم! ({tier_name})\n{cand['symbol']} ظهرت {MIN_APPEARANCES} مرات متتالية!\nسعر: {cand['entry_price']:.4f}\nهدف: {cand['target_pct']:.2f}%"
+        asyncio.create_task(send_telegram_message(msg))
+
+        already_open = any(p['symbol'] == cand['symbol'] for p in trader.positions)
+        if not already_open and trader.cash > 50:
+            if trader.open_position(cand, exchange_sync, signal_type='momentum'):
+                positions_opened += 1
+
+    # أولوية 3: عملة جيدة
+    for cand in candidates:
+        if positions_opened >= MAX_POSITIONS_PER_SCAN:
+            break
+        is_good, criteria_met = check_good_coin_criteria(cand)
+        if is_good:
+            already_open = any(p['symbol'] == cand['symbol'] for p in trader.positions)
+            if not already_open and trader.cash > 50:
+                if trader.open_position(cand, exchange_sync, signal_type='good_coin'):
+                    positions_opened += 1
+
+    # إرسال قائمة الترشيحات
+    if candidates:
+        msg = f"📋 أفضل {len(candidates)} ترشيحات ({tier_name}):\n\n"
+        for i, c in enumerate(candidates, 1):
+            msg += f"{i}. {c['symbol']} | {c['entry_price']:.4f} | ألفا: {c['alpha']:.3f} | هدف: {c['target_pct']:.2f}% | أولوية: {c['priority']}\n"
+        asyncio.create_task(send_telegram_message(msg))
 
 # =========================================================
 # حلقة التداول الرئيسية
 # =========================================================
 async def trading_loop():
-    global exchange_sync_instance, candidate_tracker, current_cycle, all_symbols
+    global exchange_sync_instance, candidate_tracker
+    global gold_symbols, silver_symbols, bronze_symbols, symbol_classification_time
     global is_paused, pause_until_time, auto_paused_reason, trader_instance
 
     exchange_async = ccxt_async.gateio({'enableRateLimit': True})
     exchange_sync = ccxt.gateio({'enableRateLimit': True})
     exchange_sync_instance = exchange_sync
 
+    # تحميل وتصنيف العملات
     markets = await exchange_async.load_markets()
     if markets:
-        all_symbols = [s for s in markets if s.endswith('/USDT') and '.d' not in s]
-        print(f"📋 تم تحميل {len(all_symbols)} عملة")
+        all_syms = [s for s in markets if s.endswith('/USDT') and '.d' not in s]
+        gold_symbols, silver_symbols, bronze_symbols = await classify_symbols(exchange_async, all_syms)
+        symbol_classification_time = time.time()
+        print(f"📋 تصنيف: Gold={len(gold_symbols)}, Silver={len(silver_symbols)}, Bronze={len(bronze_symbols)}")
     else:
         print("❌ فشل تحميل العملات")
         return
@@ -1110,26 +1366,28 @@ async def trading_loop():
     tracker = CandidateTracker()
     candidate_tracker = tracker
 
-    reject_reasons = {
-        "volume_spike": 0, "filter_score": 0, "strategy": 0,
-        "cold_market": 0, "high_change_24h": 0,
-        "volume_confirm": 0, "trend_confirm": 0, "high_volatility": 0
-    }
-
     last_report = time.time()
-    last_candidates_sent = time.time()
     last_backup = time.time()
     last_price_update = 0
+    last_gold_scan = 0
+    last_silver_scan = 0
+    last_bronze_scan = 0
 
-    print(f"🤖 بدء التداول - {datetime.now()}\n")
+    print(f"🤖 بدء التداول بنظام المسح فائق السرعة - {datetime.now()}\n")
     await asyncio.sleep(2)
-    await send_telegram_message("🚀 بوت التداول الورقي (الإصدار النهائي) بدأ العمل!")
+    await send_telegram_message(f"🚀 بوت التداول فائق السرعة بدأ العمل!\n🥇 Gold: {len(gold_symbols)} عملة (كل 3 دقائق)\n🥈 Silver: {len(silver_symbols)} عملة (كل 10 دقائق)\n🥉 Bronze: {len(bronze_symbols)} عملة (كل 30 دقيقة)\n⚡ مسح متوازي + أولويات")
 
     while True:
         try:
             current_time = time.time()
+            
+            # إعادة تصنيف العملات كل 6 ساعات
+            if current_time - symbol_classification_time >= 21600:
+                print("🔄 إعادة تصنيف العملات...")
+                gold_symbols, silver_symbols, bronze_symbols = await classify_symbols(exchange_async, all_syms)
+                symbol_classification_time = current_time
 
-            # تحديث الأسعار كل دقيقة
+            # تحديث الأسعار كل 30 ثانية
             if current_time - last_price_update >= PRICE_UPDATE_INTERVAL:
                 tracker.update_prices(exchange_sync)
                 tracker.evaluate_and_close()
@@ -1154,7 +1412,7 @@ async def trading_loop():
                     auto_paused_reason = None
                     await send_telegram_message("▶️ تم استئناف التداول تلقائياً.")
                 else:
-                    await asyncio.sleep(10)
+                    await asyncio.sleep(5)
                     continue
 
             # فحص الانحرافات
@@ -1165,160 +1423,41 @@ async def trading_loop():
                     auto_paused_reason = f"تلقائي: {anomaly_reason}"
                     await send_telegram_message(f"🚨 تنبيه انحراف!\n{anomaly_reason}\nتم الإيقاف التلقائي.")
 
-            # مسح كل 30 دقيقة
-            if current_time - last_candidates_sent >= SCAN_INTERVAL:
-                # اختيار مجموعة العملات
-                total_symbols = len(all_symbols)
-                if current_cycle == 1:
-                    symbols_to_scan = all_symbols[:SYMBOLS_PER_CYCLE]
-                    print(f"\n🔄 دورة 1: {len(symbols_to_scan)} عملة")
-                    current_cycle = 2
-                else:
-                    start_idx = SYMBOLS_PER_CYCLE
-                    end_idx = min(start_idx + SYMBOLS_PER_CYCLE, total_symbols)
-                    symbols_to_scan = all_symbols[start_idx:end_idx]
-                    print(f"\n🔄 دورة 2: {len(symbols_to_scan)} عملة")
-                    current_cycle = 1
+            market_ctx = detect_market_regime(exchange_sync)
+            
+            # ⭐ المسح حسب المستوى (مع نظام الأولويات)
+            # Gold: كل 3 دقائق
+            if current_time - last_gold_scan >= GOLD_SCAN_INTERVAL and gold_symbols and market_ctx.get('regime') != 'COLD':
+                print(f"\n🥇 مسح Gold: {len(gold_symbols[:GOLD_COUNT])} عملة")
+                filtered = await enhanced_quick_filter(exchange_async, gold_symbols[:GOLD_COUNT], "Gold")
+                if filtered:
+                    candidates = await analyze_symbols_with_priority(exchange_sync, filtered, market_ctx, "Gold", max_to_analyze=25)
+                    if candidates:
+                        tracker.add_candidates(candidates, datetime.now(), "Gold")
+                        await process_candidates(candidates, trader, exchange_sync, tracker, "Gold")
+                last_gold_scan = current_time
 
-                results = await batched_lightning_scan(exchange_async, symbols_to_scan)
+            # Silver: كل 10 دقائق
+            if current_time - last_silver_scan >= SILVER_SCAN_INTERVAL and silver_symbols:
+                print(f"\n🥈 مسح Silver: {len(silver_symbols[:SILVER_COUNT])} عملة")
+                filtered = await enhanced_quick_filter(exchange_async, silver_symbols[:SILVER_COUNT], "Silver")
+                if filtered:
+                    candidates = await analyze_symbols_with_priority(exchange_sync, filtered, market_ctx, "Silver", max_to_analyze=20)
+                    if candidates:
+                        tracker.add_candidates(candidates, datetime.now(), "Silver")
+                        await process_candidates(candidates, trader, exchange_sync, tracker, "Silver")
+                last_silver_scan = current_time
 
-                if results:
-                    market_ctx = detect_market_regime(exchange_sync)
-
-                    if market_ctx.get('regime') == 'COLD':
-                        print("⚠️ سوق بارد، تخطي الصفقات")
-                        reject_reasons["cold_market"] += 1
-                    else:
-                        candidates = []
-                        for item in results:
-                            df = fetch_ohlcv_sync(exchange_sync, item['symbol'], '5m', 40)
-                            if df.empty:
-                                continue
-
-                            last_volume = df['volume'].iloc[-1]
-                            avg_volume_20 = df['volume'].rolling(20).mean().iloc[-1]
-                            if pd.isna(avg_volume_20) or last_volume < avg_volume_20 * 1.5:
-                                reject_reasons["volume_spike"] += 1
-                                continue
-
-                            fs, filter_details = calculate_filter_score(df)
-                            if fs < 15:
-                                reject_reasons["filter_score"] += 1
-                                continue
-
-                            obi = item.get('obi', 0)
-                            sp, strategy_details = check_strategies_weighted(df, obi)
-                            if sp < 1:
-                                reject_reasons["strategy"] += 1
-                                continue
-
-                            vol_confirm, _ = check_volume_confirmation(df)
-                            if not vol_confirm:
-                                reject_reasons["volume_confirm"] += 1
-                                continue
-
-                            trend_confirm, _ = check_trend_confirmation(df)
-                            if not trend_confirm:
-                                reject_reasons["trend_confirm"] += 1
-                                continue
-
-                            alpha, alpha_details = calculate_enhanced_alpha(df, market_ctx, obi)
-                            target_pct = calculate_target_percentage(df)
-                            last_price = df['close'].iloc[-1]
-                            target_price = last_price * (1 + target_pct / 100)
-                            eta_bars = calculate_blended_eta(df, target_price)
-                            eta_str = format_eta(eta_bars)
-                            final_rank = (alpha * 0.7) + (target_pct / 100 * 0.3)
-
-                            cand = {
-                                'symbol': item['symbol'],
-                                'entry_price': last_price,
-                                'alpha': alpha,
-                                'target_pct': target_pct,
-                                'eta_str': eta_str,
-                                'eta_bars': eta_bars,
-                                'final_rank': final_rank,
-                                'df': df,
-                                'obi': obi,
-                                'filter_score': fs,
-                                'strategy_points': sp,
-                                'volume_confirm': vol_confirm,
-                                'trend_confirm': trend_confirm
-                            }
-                            candidates.append(cand)
-
-                        if candidates:
-                            candidates.sort(key=lambda x: x['final_rank'], reverse=True)
-
-                            positions_opened = 0
-                            MAX_POSITIONS_PER_CYCLE = 3
-
-                            # أولوية 1: انفجار وشيك
-                            for cand in candidates[:TOP_CANDIDATES_COUNT]:
-                                if positions_opened >= MAX_POSITIONS_PER_CYCLE:
-                                    break
-                                is_explosive, criteria_met, _ = check_explosion_criteria(cand)
-                                if is_explosive:
-                                    msg = f"🔥🔥🔥 انفجار وشيك!\n{cand['symbol']}\nسعر: {cand['entry_price']:.4f}\nألفا: {cand['alpha']:.3f}\nهدف: {cand['target_pct']:.2f}%\n✅ {criteria_met}/5 معايير"
-                                    asyncio.create_task(send_telegram_message(msg))
-
-                                    already_open = any(p['symbol'] == cand['symbol'] for p in trader.positions)
-                                    if not already_open and trader.cash > 50:
-                                        df = cand['df']
-                                        if df is not None and len(df) > 14:
-                                            atr_series = manual_atr(df['high'], df['low'], df['close'])
-                                            atr = atr_series.iloc[-1] if not atr_series.empty else cand['entry_price'] * 0.03
-                                        else:
-                                            atr = cand['entry_price'] * 0.03
-                                        cand['stop_loss'] = cand['entry_price'] - (2.5 * atr)
-                                        cand['take_profit'] = cand['entry_price'] * (1 + cand['target_pct'] / 100)
-
-                                        if trader.open_position(cand, exchange_sync, signal_type='explosion'):
-                                            positions_opened += 1
-
-                            # تحضير للتأكيد متعدد الدورات
-                            for cand in candidates[:TOP_CANDIDATES_COUNT]:
-                                df = cand['df']
-                                if df is not None and len(df) > 14:
-                                    atr_series = manual_atr(df['high'], df['low'], df['close'])
-                                    atr = atr_series.iloc[-1] if not atr_series.empty else cand['entry_price'] * 0.03
-                                else:
-                                    atr = cand['entry_price'] * 0.03
-                                cand['stop_loss'] = cand['entry_price'] - (2.5 * atr)
-                                cand['take_profit'] = cand['entry_price'] * (1 + cand['target_pct'] / 100)
-
-                            tracker.add_candidates(candidates[:TOP_CANDIDATES_COUNT], datetime.now())
-
-                            confirmed_momentum = check_momentum_confirmation(tracker, MIN_APPEARANCES)
-                            for cand in confirmed_momentum:
-                                if positions_opened >= MAX_POSITIONS_PER_CYCLE:
-                                    break
-                                msg = f"🚀🚀🚀 تأكيد زخم!\n{cand['symbol']} ظهرت {MIN_APPEARANCES} مرات متتالية!\nسعر: {cand['entry_price']:.4f}\nهدف: {cand['target_pct']:.2f}%"
-                                asyncio.create_task(send_telegram_message(msg))
-
-                                already_open = any(p['symbol'] == cand['symbol'] for p in trader.positions)
-                                if not already_open and trader.cash > 50:
-                                    if trader.open_position(cand, exchange_sync, signal_type='momentum'):
-                                        positions_opened += 1
-
-                            # أولوية 3: عملة جيدة
-                            for cand in candidates[:TOP_CANDIDATES_COUNT]:
-                                if positions_opened >= MAX_POSITIONS_PER_CYCLE:
-                                    break
-                                is_good, criteria_met, missing = check_good_coin_criteria(cand)
-                                if is_good:
-                                    already_open = any(p['symbol'] == cand['symbol'] for p in trader.positions)
-                                    if not already_open and trader.cash > 50:
-                                        if trader.open_position(cand, exchange_sync, signal_type='good_coin'):
-                                            positions_opened += 1
-
-                            # إرسال قائمة الترشيحات
-                            msg = f"📋 أفضل {TOP_CANDIDATES_COUNT} ترشيحات:\n\n"
-                            for i, c in enumerate(candidates[:TOP_CANDIDATES_COUNT], 1):
-                                msg += f"{i}. {c['symbol']} | {c['entry_price']:.4f} | ألفا: {c['alpha']:.3f} | هدف: {c['target_pct']:.2f}%\n"
-                            asyncio.create_task(send_telegram_message(msg))
-
-                last_candidates_sent = current_time
+            # Bronze: كل 30 دقيقة
+            if current_time - last_bronze_scan >= BRONZE_SCAN_INTERVAL and bronze_symbols:
+                print(f"\n🥉 مسح Bronze: {len(bronze_symbols[:BRONZE_COUNT])} عملة")
+                filtered = await enhanced_quick_filter(exchange_async, bronze_symbols[:BRONZE_COUNT], "Bronze")
+                if filtered:
+                    candidates = await analyze_symbols_with_priority(exchange_sync, filtered, market_ctx, "Bronze", max_to_analyze=15)
+                    if candidates:
+                        tracker.add_candidates(candidates, datetime.now(), "Bronze")
+                        await process_candidates(candidates, trader, exchange_sync, tracker, "Bronze")
+                last_bronze_scan = current_time
 
             # تقرير كل ساعة
             if current_time - last_report >= 3600:
@@ -1343,8 +1482,6 @@ async def trading_loop():
                 if os.path.exists(tracker.candidates_csv):
                     asyncio.create_task(send_csv_file(tracker.candidates_csv, "📁 ترشيحات العملات"))
 
-                for key in reject_reasons:
-                    reject_reasons[key] = 0
                 last_report = current_time
 
             # نسخ احتياطي كل 24 ساعة
@@ -1352,7 +1489,7 @@ async def trading_loop():
                 backup_files()
                 last_backup = current_time
 
-            await asyncio.sleep(5)
+            await asyncio.sleep(2)
 
         except KeyboardInterrupt:
             print("\n👋 إيقاف...")
@@ -1360,34 +1497,29 @@ async def trading_loop():
             break
         except Exception as e:
             print(f"❌ خطأ: {e}")
-            await asyncio.sleep(60)
+            await asyncio.sleep(30)
 
     await exchange_async.close()
 
 # =========================================================
-# الدالة الرئيسية (مُصلحة)
+# الدالة الرئيسية
 # =========================================================
 async def main():
     global telegram_app
     
-    # تهيئة تطبيق تيليجرام
     telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
     await telegram_app.initialize()
     print("🤖 تطبيق Telegram جاهز للإرسال...")
     
-    # إضافة handlers للأوامر
     telegram_app.add_handler(CommandHandler("status", status_command))
     
-    # تشغيل البوت في الخلفية
     await telegram_app.start()
     
     try:
-        # تشغيل حلقة التداول الرئيسية
         await trading_loop()
     except KeyboardInterrupt:
         print("\n👋 إيقاف...")
     finally:
-        # إيقاف تطبيق تيليجرام بشكل نظيف
         await telegram_app.stop()
         await telegram_app.shutdown()
         print("✅ تم إيقاف التطبيق")

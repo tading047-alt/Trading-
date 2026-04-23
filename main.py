@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🚂 نظام اكتشاف الانفجارات - الإصدار النهائي مع الإعدادات المخففة
-First Station Explosion Detector - Final Edition with Relaxed Settings
+🚂 نظام اكتشاف الانفجارات - مسح 1000 عملة مع إعدادات مخففة
+First Station Explosion Detector - 1000 Symbols Relaxed
 
-الإعدادات المخففة:
-✅ خفض الثقة المطلوبة إلى 50
-✅ نمط واحد فقط مطلوب
-✅ سيولة أقل مقبولة (50k$)
-✅ سبريد أعلى مقبول (0.5%)
-✅ جميع الأنماط مسموحة
-✅ أوزان محسّنة للأنماط الإضافية
-✅ تخفيف شروط BTC
+المميزات:
+✅ مسح 1000 عملة لاكتشاف أوسع
+✅ إعدادات مخففة للحصول على المزيد من الفرص
 ✅ استراتيجية خروج متكاملة (جني أرباح جزئي + وقف متحرك + وقف ثابت)
 ✅ نبضات قلب كل ساعتين للتأكد من عمل البوت
 ✅ أمر /status في تليجرام لمعرفة حالة البوت
 ✅ نطاق دخول مثالي لكل إشارة
+✅ تسجيل CSV وقاعدة بيانات SQLite
+✅ لوحة تحكم ويب
 """
 
 import asyncio
@@ -44,43 +41,42 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "5067771509")
 BOT_TAG = "#Exp100"
 
 # =========================================================
-# 🏆 الإعدادات المعدلة لاكتشاف المزيد من الفرص
+# 🏆 الإعدادات المخصصة لمسح 1000 عملة
 # =========================================================
 TOTAL_CAPITAL = 1000.0
-MAX_TRADES_PER_DAY = 12                     # زيادة عدد الصفقات اليومية
+MAX_TRADES_PER_DAY = 12                     # صفقات أكثر
 CAPITAL_PER_TRADE = 100.0
-MAX_CONCURRENT_TRADES = 4                   # السماح بصفقات متزامنة أكثر
+MAX_CONCURRENT_TRADES = 4
 
-SCAN_INTERVAL = 35                          # مسح أسرع قليلاً
-SCAN_BATCH_SIZE = 60
-SCAN_SYMBOLS_LIMIT = 400                    # زيادة العملات الممسوحة
+SCAN_INTERVAL = 60                          # فترة أطول للمسح الكبير
+SCAN_BATCH_SIZE = 100                       # دفعة أكبر للمعالجة
+SCAN_SYMBOLS_LIMIT = 1000                   # 🎯 مسح 1000 عملة
 
-# إعدادات الثقة - مخففة لاكتشاف إشارات أكثر
-MIN_CONFIDENCE = 50                         # بدلاً من 70
-MIN_PATTERNS_REQUIRED = 1                   # بدلاً من 2 (نمط واحد كافي)
-MIN_VOLUME_24H = 50000                      # بدلاً من 100000 (سيولة أقل مقبولة)
-MAX_SPREAD = 0.5                            # بدلاً من 0.3 (قبول سبريد أعلى)
-MAX_PRICE_CHANGE_24H = 15.0                 # بدلاً من 10.0 (قبول تغير أكبر)
+# إعدادات الثقة - مخففة
+MIN_CONFIDENCE = 50
+MIN_PATTERNS_REQUIRED = 1
+MIN_VOLUME_24H = 50000
+MAX_SPREAD = 0.5
+MAX_PRICE_CHANGE_24H = 15.0
 
-# أوزان الأنماط - رفع وزن الانفجار
+# أوزان الأنماط
 PATTERN_WEIGHTS = {
     'calm_before_storm': 40,
     'whale_accumulation': 45,
     'bollinger_squeeze': 35,
-    'volume_spike': 30,                     # زيادة وزن انفجار الحجم
-    'momentum_building': 20,                # زيادة وزن الزخم
-    'support_bounce': 30                    # زيادة وزن الارتداد
+    'volume_spike': 30,
+    'momentum_building': 20,
+    'support_bounce': 30
 }
 
-# السماح بكل الأنماط
 ALLOWED_PATTERNS = ['whale_accumulation', 'calm_before_storm', 'bollinger_squeeze', 'volume_spike', 'momentum_building', 'support_bounce']
 
-# إعدادات BTC - تخفيف القيود
-BTC_MIN_ADX = 10                            # بدلاً من 20 (السماح بالتداول في سوق أقل وضوحاً)
-BTC_MAX_DROP_1H = -3.0                      # بدلاً من -2.0 (تحمل هبوط BTC أكبر)
+# إعدادات BTC
+BTC_MIN_ADX = 10
+BTC_MAX_DROP_1H = -3.0
 
 # =========================================================
-# 🎯 استراتيجية الخروج المتكاملة (الإعدادات المثلى)
+# 🎯 استراتيجية الخروج المتكاملة
 # =========================================================
 EXIT_STRATEGY = {
     'partial_take_profit': [
@@ -284,7 +280,7 @@ class TradeManager:
                 trade.take_profits_hit.append(tp['percent'])
                 sell_value = sell_quantity * current_price
                 self.available_capital += sell_value
-                print(f"  💰 {symbol}: جني أرباح جزئي +{tp['percent']}% (تم بيع {tp['sell_ratio']*100:.0f}%)")
+                print(f"  💰 {symbol}: جني أرباح جزئي +{tp['percent']}%")
                 if trade.remaining_quantity <= 0:
                     return self._close_trade(symbol, current_price, pnl_pct, 'fully_sold')
         
@@ -294,7 +290,6 @@ class TradeManager:
                 if not trade.trailing_activated:
                     trade.trailing_activated = True
                     trade.trailing_stop = current_price * (1 - EXIT_STRATEGY['trailing_stop']['distance']/100)
-                    print(f"  🔄 {symbol}: تم تفعيل الوقف المتحرك عند +{EXIT_STRATEGY['trailing_stop']['activation']}%")
                 else:
                     new_stop = current_price * (1 - EXIT_STRATEGY['trailing_stop']['distance']/100)
                     if new_stop > trade.trailing_stop:
@@ -337,7 +332,8 @@ class ExplosionDetector:
         symbols = await self._get_active_symbols(exchange)
         print(f"📊 جاري فحص {len(symbols)} عملة...")
         all_signals = []
-        for i in range(0, len(symbols), SCAN_BATCH_SIZE):
+        total = len(symbols)
+        for i in range(0, total, SCAN_BATCH_SIZE):
             batch = symbols[i:i+SCAN_BATCH_SIZE]
             tasks = [self._analyze_symbol(exchange, sym) for sym in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -345,9 +341,9 @@ class ExplosionDetector:
                 if isinstance(result, ExplosionSignal) and self._should_accept_signal(result):
                     all_signals.append(result)
                     self._record_signal(result)
-            progress = min(i + SCAN_BATCH_SIZE, len(symbols))
-            print(f"   📊 تقدم: {progress}/{len(symbols)} ({progress*100//len(symbols)}%)")
-            await asyncio.sleep(0.2)
+            progress = min(i + SCAN_BATCH_SIZE, total)
+            print(f"   📊 تقدم: {progress}/{total} ({progress*100//total}%)")
+            await asyncio.sleep(0.3)
         all_signals.sort(key=lambda x: (x.priority, x.confidence), reverse=True)
         return all_signals
     
@@ -382,15 +378,13 @@ class ExplosionDetector:
             if len(ohlcv_1m) < 30 or len(ohlcv_5m) < 20:
                 return None
             data_1m = np.array(ohlcv_1m); data_5m = np.array(ohlcv_5m)
-            closes_1m, volumes_1m = data_1m[:, 4], data_1m[:, 5]
-            closes_5m, volumes_5m = data_5m[:, 4], data_5m[:, 5]
+            closes_1m, volumes_1m = data_1m[:,4], data_1m[:,5]
+            closes_5m, volumes_5m = data_5m[:,4], data_5m[:,5]
             current_price = ticker['last']
             detected_patterns = []
             total_confidence = 0
-            time_weights = 0
-            time_to_explosion = 0
+            time_weights, time_to_explosion = 0, 0
             
-            # فحص الأنماط المسموحة
             checks = []
             if 'calm_before_storm' in ALLOWED_PATTERNS:
                 checks.append(self._check_calm_before_storm(volumes_5m, closes_5m))
@@ -404,9 +398,10 @@ class ExplosionDetector:
                     detected_patterns.append(check['name'])
                     pattern_name = check.get('pattern_name')
                     if pattern_name and pattern_name in self.pattern_weights:
-                        total_confidence += self.pattern_weights[pattern_name]
-                        time_to_explosion += check['time_estimate'] * self.pattern_weights[pattern_name]
-                        time_weights += self.pattern_weights[pattern_name]
+                        w = self.pattern_weights[pattern_name]
+                        total_confidence += w
+                        time_to_explosion += check['time_estimate'] * w
+                        time_weights += w
                     else:
                         total_confidence += 20
                         time_to_explosion += check['time_estimate'] * 20
@@ -725,7 +720,7 @@ def dashboard():
     return render_template_string('''
     <!DOCTYPE html><html dir="rtl"><head><title>نظام اكتشاف الانفجارات</title><meta charset="utf-8"><meta http-equiv="refresh" content="30">
     <style>body{font-family:Arial;background:#1a1a2e;color:#eee;margin:20px}.card{background:#16213e;border-radius:10px;padding:20px;margin:10px}.badge{padding:5px 10px;border-radius:20px}.success{background:#0f9d58}.warning{background:#f4b400}.danger{background:#d93025}h1,h2{color:#fff}p{margin:10px 0}.strategy-box{background:#0f3460;border-radius:8px;padding:15px;margin:10px 0}</style></head><body>
-    <h1>🚂 نظام اكتشاف الانفجارات - الإعدادات المخففة</h1>
+    <h1>🚂 نظام اكتشاف الانفجارات - 1000 عملة</h1>
     <div style="display:flex;flex-wrap:wrap">
     <div class="card" style="flex:1"><h2>📊 حالة السوق</h2><p>النظام: <span class="badge {{'success' if market.trend=='bullish' else 'danger'}}">{{market.trend}}</span></p><p>ADX: {{market.adx}}</p><p>BTC 1h: {{market.btc_change}}%</p><p>التداول: {{'✅ مسموح' if market.can_trade else '❌ ممنوع'}}</p></div>
     <div class="card" style="flex:1"><h2>💰 حالة الحساب</h2><p>الرصيد المتاح: ${{"%.2f"|format(tm.available_capital)}}</p><p>الصفقات النشطة: {{tm.active_trades|length}}</p><p>صفقات اليوم: {{tm.daily_trades}}/{{max_daily}}</p><p>نسبة النجاح: {{"%.1f"|format(tm.get_win_rate())}}%</p></div>
@@ -802,8 +797,8 @@ class ExplosionScannerEngine:
     async def run(self):
         global engine_instance
         engine_instance = self
-        print("╔══════════════════════════════════════════════════════════╗\n║     💥 نظام اكتشاف الانفجارات - إعدادات مخففة 💥      ║\n╚══════════════════════════════════════════════════════════╝")
-        exchange = ccxt_async.gateio({'enableRateLimit': True, 'rateLimit': 100})
+        print("╔══════════════════════════════════════════════════════════╗\n║     💥 نظام اكتشاف الانفجارات - 1000 عملة 💥      ║\n╚══════════════════════════════════════════════════════════╝")
+        exchange = ccxt_async.gateio({'enableRateLimit': True, 'rateLimit': 150})
         await self.notifier.send_startup_message()
         try:
             while True:

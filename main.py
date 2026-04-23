@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🚂 نظام اكتشاف الانفجارات - الإصدار النهائي الفعال
-First Station Explosion Detector - Guaranteed Signals
+🚂 نظام اكتشاف الانفجارات - الإصدار النهائي (جودة عالية)
+First Station Explosion Detector - Final High-Quality Edition
+
+المميزات:
+✅ استبعاد العملات الكبيرة والعملات ذات الرافعة (3S, 3L, X5...)
+✅ الدخول الآلي للصفقات الممتازة فقط (أولوية 3+)
+✅ إعدادات صارمة للجودة العالية
+✅ إصلاح كامل لجلب العملات
+✅ جميع الميزات السابقة (Flask, تليجرام, CSV, نبضات القلب)
 """
 
 import asyncio
@@ -31,37 +38,40 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "5067771509")
 BOT_TAG = "#Exp100"
 
 # =========================================================
-# 🏆 إعدادات مخصصة لضمان ظهور الصفقات
+# 🏆 إعدادات الجودة العالية – للعملات الجيدة جداً فقط
 # =========================================================
 TOTAL_CAPITAL = 1000.0
-MAX_TRADES_PER_DAY = 12
+MAX_TRADES_PER_DAY = 5                      # عدد أقل = انتقائية أعلى
 CAPITAL_PER_TRADE = 100.0
-MAX_CONCURRENT_TRADES = 4
+MAX_CONCURRENT_TRADES = 2                   # تركيز على صفقتين فقط
 
-SCAN_INTERVAL = 60
-SCAN_BATCH_SIZE = 100
-SCAN_SYMBOLS_LIMIT = 1000
+SCAN_INTERVAL = 45
+SCAN_BATCH_SIZE = 50
+SCAN_SYMBOLS_LIMIT = 300                    # فحص أفضل 300 عملة سيولة
 
-# إعدادات مخففة جداً
-MIN_CONFIDENCE = 30               # منخفض لضمان قبول الإشارات
-MIN_PATTERNS_REQUIRED = 1
-MIN_VOLUME_24H = 50000
-MAX_SPREAD = 0.5
-MAX_PRICE_CHANGE_24H = 15.0
+# شروط صارمة للدخول
+MIN_CONFIDENCE = 75                          # ثقة عالية جداً
+MIN_PATTERNS_REQUIRED = 2                    # نمطان على الأقل
+MIN_VOLUME_24H = 150000                      # سيولة مرتفعة
+MAX_SPREAD = 0.2                             # سبريد ضيق (سوق منتظم)
+MAX_PRICE_CHANGE_24H = 7.0                   # لم يتحرك السعر بشكل مبالغ
 
+# أوزان الأنماط – رفع الأقوى فقط
 PATTERN_WEIGHTS = {
-    'calm_before_storm': 40,
-    'whale_accumulation': 45,
-    'bollinger_squeeze': 35,
-    'volume_spike': 30,
-    'momentum_building': 20,
-    'support_bounce': 30
+    'calm_before_storm': 45,
+    'whale_accumulation': 55,                # الأعلى وزناً
+    'bollinger_squeeze': 40,
+    'volume_spike': 15,                      # ضعيف
+    'momentum_building': 10,                 # ضعيف
+    'support_bounce': 20
 }
 
-ALLOWED_PATTERNS = ['whale_accumulation', 'calm_before_storm', 'bollinger_squeeze', 'volume_spike', 'momentum_building', 'support_bounce']
+# السماح بأفضل 3 أنماط فقط
+ALLOWED_PATTERNS = ['whale_accumulation', 'calm_before_storm', 'bollinger_squeeze']
 
-BTC_MIN_ADX = 10
-BTC_MAX_DROP_1H = -3.0
+# شروط السوق الصارمة
+BTC_MIN_ADX = 22                             # سوق واضح الاتجاه
+BTC_MAX_DROP_1H = -1.5                       # لا يتحمل هبوطاً كبيراً للبيتكوين
 
 # =========================================================
 # 🎯 استراتيجية الخروج المتكاملة
@@ -307,13 +317,17 @@ class TradeManager:
         return self.winning_trades / self.total_trades * 100
 
 # =========================================================
-# كاشف الانفجارات (مع الإصلاح النهائي)
+# كاشف الانفجارات (مع استبعاد العملات الكبيرة والرافعة)
 # =========================================================
 class ExplosionDetector:
     def __init__(self):
         self.pattern_weights = PATTERN_WEIGHTS
         self.recent_signals = deque(maxlen=100)
         self.last_signal_time = {}
+
+    # قائمة العملات المستبعدة (الكبيرة والرافعة)
+    EXCLUDED_PATTERNS = ['3S', '3L', '5S', '5L', 'X3', 'X5', 'BEAR', 'BULL', 'UP', 'DOWN']
+    EXCLUDED_SYMBOLS = ['BTC/USDT', 'ETH/USDT']  # يمكنك إضافة المزيد إذا أردت
         
     async def scan_market(self, exchange) -> List[ExplosionSignal]:
         print(f"\n{'='*60}\n🔍 مسح السوق - {datetime.now().strftime('%H:%M:%S')}\n{'='*60}")
@@ -345,6 +359,13 @@ class ExplosionDetector:
 
             for sym, ticker in tickers.items():
                 if not sym or not sym.endswith('/USDT'):
+                    continue
+                
+                # استبعاد العملات الكبيرة والرافعة
+                base_currency = sym.split('/')[0]
+                if base_currency in self.EXCLUDED_SYMBOLS:
+                    continue
+                if any(pattern in base_currency for pattern in self.EXCLUDED_PATTERNS):
                     continue
 
                 volume = ticker.get('quoteVolume')
@@ -730,9 +751,9 @@ def dashboard():
     stats = engine_instance.last_scan_stats
     tm = engine_instance.trade_manager
     return render_template_string('''
-    <!DOCTYPE html><html dir="rtl"><head><title>نظام اكتشاف الانفجارات</title><meta charset="utf-8"><meta http-equiv="refresh" content="30">
+    <!DOCTYPE html><html dir="rtl"><head><title>نظام اكتشاف الانفجارات - جودة عالية</title><meta charset="utf-8"><meta http-equiv="refresh" content="30">
     <style>body{font-family:Arial;background:#1a1a2e;color:#eee;margin:20px}.card{background:#16213e;border-radius:10px;padding:20px;margin:10px}.badge{padding:5px 10px;border-radius:20px}.success{background:#0f9d58}.warning{background:#f4b400}.danger{background:#d93025}h1,h2{color:#fff}p{margin:10px 0}.strategy-box{background:#0f3460;border-radius:8px;padding:15px;margin:10px 0}</style></head><body>
-    <h1>🚂 نظام اكتشاف الانفجارات - 1000 عملة</h1>
+    <h1>🚂 نظام اكتشاف الانفجارات - جودة عالية</h1>
     <div style="display:flex;flex-wrap:wrap">
     <div class="card" style="flex:1"><h2>📊 حالة السوق</h2><p>النظام: <span class="badge {{'success' if market.trend=='bullish' else 'danger'}}">{{market.trend}}</span></p><p>ADX: {{market.adx}}</p><p>BTC 1h: {{market.btc_change}}%</p><p>التداول: {{'✅ مسموح' if market.can_trade else '❌ ممنوع'}}</p></div>
     <div class="card" style="flex:1"><h2>💰 حالة الحساب</h2><p>الرصيد المتاح: ${{"%.2f"|format(tm.available_capital)}}</p><p>الصفقات النشطة: {{tm.active_trades|length}}</p><p>صفقات اليوم: {{tm.daily_trades}}/{{max_daily}}</p><p>نسبة النجاح: {{"%.1f"|format(tm.get_win_rate())}}%</p></div>
@@ -791,7 +812,7 @@ class TelegramPoller:
             await client.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"})
 
 # =========================================================
-# المحرك الرئيسي (مع تعديل فتح الصفقات)
+# المحرك الرئيسي (أولوية ≥ 3)
 # =========================================================
 class ExplosionScannerEngine:
     def __init__(self):
@@ -809,7 +830,7 @@ class ExplosionScannerEngine:
     async def run(self):
         global engine_instance
         engine_instance = self
-        print("╔══════════════════════════════════════════════════════════╗\n║     💥 نظام اكتشاف الانفجارات - 1000 عملة 💥      ║\n╚══════════════════════════════════════════════════════════╝")
+        print("╔══════════════════════════════════════════════════════════╗\n║     💥 نظام اكتشاف الانفجارات - جودة عالية 💥      ║\n╚══════════════════════════════════════════════════════════╝")
         exchange = ccxt_async.gateio({'enableRateLimit': True, 'rateLimit': 150})
         await self.notifier.send_startup_message()
         try:
@@ -832,9 +853,9 @@ class ExplosionScannerEngine:
                         print(f"\n🎯 تم اكتشاف {len(signals)} عملة مرشحة للانفجار!")
                         available_slots = MAX_CONCURRENT_TRADES - len(self.trade_manager.active_trades)
                         for signal in signals[:available_slots]:
-                            # ✅ تم تخفيض الشرط من 2 إلى 1 لضمان فتح الصفقات
-                            if signal.priority >= 1:
-                                allocation = 1.0 if signal.priority >= 4 else 0.75 if signal.priority >= 3 else 0.5
+                            # ✅ الدخول على الإشارات الجيدة جداً فقط (أولوية 3+)
+                            if signal.priority >= 3:
+                                allocation = 1.0 if signal.priority >= 4 else 0.75
                                 if self.trade_manager.open_trade(signal, allocation):
                                     await self.notifier.send_explosion_alert(signal)
                                     self.total_signals += 1

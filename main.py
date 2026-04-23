@@ -346,26 +346,62 @@ class ExplosionDetector:
             await asyncio.sleep(0.3)
         all_signals.sort(key=lambda x: (x.priority, x.confidence), reverse=True)
         return all_signals
-    
     async def _get_active_symbols(self, exchange) -> List[str]:
-        try:
-            tickers = await exchange.fetch_tickers()
-            active = []
-            for sym, ticker in tickers.items():
-                if not sym.endswith('/USDT'):
+    try:
+        tickers = await exchange.fetch_tickers()
+        active = []
+        if not tickers:
+            print("⚠️ تحذير: لم يتم جلب أي بيانات من البورصة.")
+            return active
+
+        for sym, ticker in tickers.items():
+            if not sym or not sym.endswith('/USDT'):
+                continue
+
+            # استخراج القيم مع ضمان أنها أرقام
+            volume = ticker.get('quoteVolume')
+            change = ticker.get('percentage')
+            bid = ticker.get('bid')
+            ask = ticker.get('ask')
+
+            # تحويل None إلى 0.0 (أو قيمة آمنة)
+            if volume is None: volume = 0.0
+            if change is None: change = 0.0
+            if bid is None: bid = 0.0
+            if ask is None: ask = 0.0
+
+            # فلترة الحجم
+            if volume < MIN_VOLUME_24H:
+                continue
+
+            # فلترة التغير السعري
+            if change > MAX_PRICE_CHANGE_24H or change < -15:
+                continue
+
+            # فلترة السبريد
+            if bid > 0 and ask > 0:
+                spread = (ask - bid) / bid * 100
+                if spread > MAX_SPREAD:
                     continue
-                volume = ticker.get('quoteVolume', 0)
-                if volume < MIN_VOLUME_24H:
-                    continue
-                change = ticker.get('percentage', 0)
-                if change > MAX_PRICE_CHANGE_24H or change < -15:
-                    continue
-                bid, ask = ticker.get('bid', 0), ticker.get('ask', 0)
-                if bid > 0 and ask > 0 and (ask - bid) / bid * 100 > MAX_SPREAD:
-                    continue
-                active.append(sym)
-            active.sort(key=lambda x: tickers[x].get('quoteVolume', 0), reverse=True)
-            return active[:SCAN_SYMBOLS_LIMIT]
+            # إذا لم توجد أسعار عرض/طلب، نستمر (قد تكون عملة جديدة)
+
+            active.append(sym)
+
+        # ترتيب تنازلي حسب الحجم
+        def safe_volume(s):
+            data = tickers.get(s, {})
+            v = data.get('quoteVolume')
+            return v if v is not None else 0.0
+
+        active.sort(key=safe_volume, reverse=True)
+        print(f"✅ تم العثور على {len(active)} عملة نشطة (قبل تحديد الحد الأعلى).")
+        return active[:SCAN_SYMBOLS_LIMIT]
+
+    except Exception as e:
+        print(f"⚠️ خطأ في جلب العملات: {e}")
+        import traceback
+        traceback.print_exc()
+        return []]
         except Exception as e:
             print(f"⚠️ خطأ في جلب العملات: {e}")
             return []

@@ -1,18 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🚂 نظام اكتشاف الانفجارات - مسح 1000 عملة مع إعدادات مخففة
-First Station Explosion Detector - 1000 Symbols Relaxed
-
-المميزات:
-✅ مسح 1000 عملة لاكتشاف أوسع
-✅ إعدادات مخففة للحصول على المزيد من الفرص
-✅ استراتيجية خروج متكاملة (جني أرباح جزئي + وقف متحرك + وقف ثابت)
-✅ نبضات قلب كل ساعتين للتأكد من عمل البوت
-✅ أمر /status في تليجرام لمعرفة حالة البوت
-✅ نطاق دخول مثالي لكل إشارة
-✅ تسجيل CSV وقاعدة بيانات SQLite
-✅ لوحة تحكم ويب
+🚂 نظام اكتشاف الانفجارات - الإصدار النهائي الفعال
+First Station Explosion Detector - Guaranteed Signals
 """
 
 import asyncio
@@ -41,25 +31,24 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "5067771509")
 BOT_TAG = "#Exp100"
 
 # =========================================================
-# 🏆 الإعدادات المخصصة لمسح 1000 عملة
+# 🏆 إعدادات مخصصة لضمان ظهور الصفقات
 # =========================================================
 TOTAL_CAPITAL = 1000.0
-MAX_TRADES_PER_DAY = 12                     # صفقات أكثر
+MAX_TRADES_PER_DAY = 12
 CAPITAL_PER_TRADE = 100.0
 MAX_CONCURRENT_TRADES = 4
 
-SCAN_INTERVAL = 60                          # فترة أطول للمسح الكبير
-SCAN_BATCH_SIZE = 100                       # دفعة أكبر للمعالجة
-SCAN_SYMBOLS_LIMIT = 1000                   # 🎯 مسح 1000 عملة
+SCAN_INTERVAL = 60
+SCAN_BATCH_SIZE = 100
+SCAN_SYMBOLS_LIMIT = 1000
 
-# إعدادات الثقة - مخففة
-MIN_CONFIDENCE = 50
+# إعدادات مخففة جداً
+MIN_CONFIDENCE = 30               # منخفض لضمان قبول الإشارات
 MIN_PATTERNS_REQUIRED = 1
 MIN_VOLUME_24H = 50000
 MAX_SPREAD = 0.5
 MAX_PRICE_CHANGE_24H = 15.0
 
-# أوزان الأنماط
 PATTERN_WEIGHTS = {
     'calm_before_storm': 40,
     'whale_accumulation': 45,
@@ -71,7 +60,6 @@ PATTERN_WEIGHTS = {
 
 ALLOWED_PATTERNS = ['whale_accumulation', 'calm_before_storm', 'bollinger_squeeze', 'volume_spike', 'momentum_building', 'support_bounce']
 
-# إعدادات BTC
 BTC_MIN_ADX = 10
 BTC_MAX_DROP_1H = -3.0
 
@@ -319,7 +307,7 @@ class TradeManager:
         return self.winning_trades / self.total_trades * 100
 
 # =========================================================
-# كاشف الانفجارات
+# كاشف الانفجارات (مع الإصلاح النهائي)
 # =========================================================
 class ExplosionDetector:
     def __init__(self):
@@ -346,64 +334,52 @@ class ExplosionDetector:
             await asyncio.sleep(0.3)
         all_signals.sort(key=lambda x: (x.priority, x.confidence), reverse=True)
         return all_signals
+    
     async def _get_active_symbols(self, exchange) -> List[str]:
-    try:
-        tickers = await exchange.fetch_tickers()
-        active = []
-        if not tickers:
-            print("⚠️ تحذير: لم يتم جلب أي بيانات من البورصة.")
-            return active
+        try:
+            tickers = await exchange.fetch_tickers()
+            active = []
+            if not tickers:
+                print("⚠️ تحذير: لم يتم جلب أي بيانات من البورصة.")
+                return active
 
-        for sym, ticker in tickers.items():
-            if not sym or not sym.endswith('/USDT'):
-                continue
-
-            # استخراج القيم مع ضمان أنها أرقام
-            volume = ticker.get('quoteVolume')
-            change = ticker.get('percentage')
-            bid = ticker.get('bid')
-            ask = ticker.get('ask')
-
-            # تحويل None إلى 0.0 (أو قيمة آمنة)
-            if volume is None: volume = 0.0
-            if change is None: change = 0.0
-            if bid is None: bid = 0.0
-            if ask is None: ask = 0.0
-
-            # فلترة الحجم
-            if volume < MIN_VOLUME_24H:
-                continue
-
-            # فلترة التغير السعري
-            if change > MAX_PRICE_CHANGE_24H or change < -15:
-                continue
-
-            # فلترة السبريد
-            if bid > 0 and ask > 0:
-                spread = (ask - bid) / bid * 100
-                if spread > MAX_SPREAD:
+            for sym, ticker in tickers.items():
+                if not sym or not sym.endswith('/USDT'):
                     continue
-            # إذا لم توجد أسعار عرض/طلب، نستمر (قد تكون عملة جديدة)
 
-            active.append(sym)
+                volume = ticker.get('quoteVolume')
+                change = ticker.get('percentage')
+                bid = ticker.get('bid')
+                ask = ticker.get('ask')
 
-        # ترتيب تنازلي حسب الحجم
-        def safe_volume(s):
-            data = tickers.get(s, {})
-            v = data.get('quoteVolume')
-            return v if v is not None else 0.0
+                if volume is None: volume = 0.0
+                if change is None: change = 0.0
+                if bid is None: bid = 0.0
+                if ask is None: ask = 0.0
 
-        active.sort(key=safe_volume, reverse=True)
-        print(f"✅ تم العثور على {len(active)} عملة نشطة (قبل تحديد الحد الأعلى).")
-        return active[:SCAN_SYMBOLS_LIMIT]
+                if volume < MIN_VOLUME_24H:
+                    continue
+                if change > MAX_PRICE_CHANGE_24H or change < -15:
+                    continue
+                if bid > 0 and ask > 0:
+                    spread = (ask - bid) / bid * 100
+                    if spread > MAX_SPREAD:
+                        continue
 
-    except Exception as e:
-        print(f"⚠️ خطأ في جلب العملات: {e}")
-        import traceback
-        traceback.print_exc()
-        return []]
+                active.append(sym)
+
+            def safe_volume(s):
+                data = tickers.get(s, {})
+                v = data.get('quoteVolume')
+                return v if v is not None else 0.0
+
+            active.sort(key=safe_volume, reverse=True)
+            print(f"✅ تم العثور على {len(active)} عملة نشطة (قبل تحديد الحد الأعلى).")
+            return active[:SCAN_SYMBOLS_LIMIT]
         except Exception as e:
             print(f"⚠️ خطأ في جلب العملات: {e}")
+            import traceback
+            traceback.print_exc()
             return []
     
     async def _analyze_symbol(self, exchange, symbol: str) -> Optional[ExplosionSignal]:
@@ -815,7 +791,7 @@ class TelegramPoller:
             await client.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"})
 
 # =========================================================
-# المحرك الرئيسي
+# المحرك الرئيسي (مع تعديل فتح الصفقات)
 # =========================================================
 class ExplosionScannerEngine:
     def __init__(self):
@@ -856,7 +832,8 @@ class ExplosionScannerEngine:
                         print(f"\n🎯 تم اكتشاف {len(signals)} عملة مرشحة للانفجار!")
                         available_slots = MAX_CONCURRENT_TRADES - len(self.trade_manager.active_trades)
                         for signal in signals[:available_slots]:
-                            if signal.priority >= 2:
+                            # ✅ تم تخفيض الشرط من 2 إلى 1 لضمان فتح الصفقات
+                            if signal.priority >= 1:
                                 allocation = 1.0 if signal.priority >= 4 else 0.75 if signal.priority >= 3 else 0.5
                                 if self.trade_manager.open_trade(signal, allocation):
                                     await self.notifier.send_explosion_alert(signal)

@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🚂 نظام اكتشاف الانفجارات - الإصدار النهائي مع الإعدادات المثلى
-First Station Explosion Detector - Final Edition with Optimal Settings
+🚂 نظام اكتشاف الانفجارات - الإصدار النهائي مع الإعدادات المخففة
+First Station Explosion Detector - Final Edition with Relaxed Settings
 
-الإعدادات المثلى المدمجة:
+الإعدادات المخففة:
+✅ خفض الثقة المطلوبة إلى 50
+✅ نمط واحد فقط مطلوب
+✅ سيولة أقل مقبولة (50k$)
+✅ سبريد أعلى مقبول (0.5%)
+✅ جميع الأنماط مسموحة
+✅ أوزان محسّنة للأنماط الإضافية
+✅ تخفيف شروط BTC
 ✅ استراتيجية خروج متكاملة (جني أرباح جزئي + وقف متحرك + وقف ثابت)
-✅ إعدادات وقف متحرك ذهبية (تفعيل 3% + مسافة 2%)
-✅ فلترة ذكية للإشارات عالية الجودة فقط
-✅ نطاق دخول مثالي لكل إشارة
-✅ إعدادات متكيفة حسب حالة السوق
 ✅ نبضات قلب كل ساعتين للتأكد من عمل البوت
 ✅ أمر /status في تليجرام لمعرفة حالة البوت
+✅ نطاق دخول مثالي لكل إشارة
 """
 
 import asyncio
@@ -40,58 +44,54 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "5067771509")
 BOT_TAG = "#Exp100"
 
 # =========================================================
-# 🏆 الإعدادات المثلى (الذهبية)
+# 🏆 الإعدادات المعدلة لاكتشاف المزيد من الفرص
 # =========================================================
 TOTAL_CAPITAL = 1000.0
-MAX_TRADES_PER_DAY = 8
+MAX_TRADES_PER_DAY = 12                     # زيادة عدد الصفقات اليومية
 CAPITAL_PER_TRADE = 100.0
-MAX_CONCURRENT_TRADES = 3
+MAX_CONCURRENT_TRADES = 4                   # السماح بصفقات متزامنة أكثر
 
-SCAN_INTERVAL = 45
-SCAN_BATCH_SIZE = 50
-SCAN_SYMBOLS_LIMIT = 300
+SCAN_INTERVAL = 35                          # مسح أسرع قليلاً
+SCAN_BATCH_SIZE = 60
+SCAN_SYMBOLS_LIMIT = 400                    # زيادة العملات الممسوحة
 
-# إعدادات الثقة - إشارات قوية فقط
-MIN_CONFIDENCE = 70
-MIN_PATTERNS_REQUIRED = 2
-MIN_VOLUME_24H = 100000
-MAX_SPREAD = 0.3
-MAX_PRICE_CHANGE_24H = 10.0
+# إعدادات الثقة - مخففة لاكتشاف إشارات أكثر
+MIN_CONFIDENCE = 50                         # بدلاً من 70
+MIN_PATTERNS_REQUIRED = 1                   # بدلاً من 2 (نمط واحد كافي)
+MIN_VOLUME_24H = 50000                      # بدلاً من 100000 (سيولة أقل مقبولة)
+MAX_SPREAD = 0.5                            # بدلاً من 0.3 (قبول سبريد أعلى)
+MAX_PRICE_CHANGE_24H = 15.0                 # بدلاً من 10.0 (قبول تغير أكبر)
 
-# أوزان الأنماط
+# أوزان الأنماط - رفع وزن الانفجار
 PATTERN_WEIGHTS = {
     'calm_before_storm': 40,
     'whale_accumulation': 45,
     'bollinger_squeeze': 35,
-    'volume_spike': 20,
-    'momentum_building': 15,
-    'support_bounce': 25
+    'volume_spike': 30,                     # زيادة وزن انفجار الحجم
+    'momentum_building': 20,                # زيادة وزن الزخم
+    'support_bounce': 30                    # زيادة وزن الارتداد
 }
 
-ALLOWED_PATTERNS = ['whale_accumulation', 'calm_before_storm', 'bollinger_squeeze']
+# السماح بكل الأنماط
+ALLOWED_PATTERNS = ['whale_accumulation', 'calm_before_storm', 'bollinger_squeeze', 'volume_spike', 'momentum_building', 'support_bounce']
 
-# إعدادات BTC
-BTC_MIN_ADX = 20
-BTC_MAX_DROP_1H = -2.0
+# إعدادات BTC - تخفيف القيود
+BTC_MIN_ADX = 10                            # بدلاً من 20 (السماح بالتداول في سوق أقل وضوحاً)
+BTC_MAX_DROP_1H = -3.0                      # بدلاً من -2.0 (تحمل هبوط BTC أكبر)
 
 # =========================================================
 # 🎯 استراتيجية الخروج المتكاملة (الإعدادات المثلى)
 # =========================================================
 EXIT_STRATEGY = {
-    # 1. جني أرباح جزئي سريع
     'partial_take_profit': [
-        {'percent': 3.0, 'sell_ratio': 0.30},   # بيع 30% عند +3%
-        {'percent': 5.0, 'sell_ratio': 0.30},   # بيع 30% عند +5%
+        {'percent': 3.0, 'sell_ratio': 0.30},
+        {'percent': 5.0, 'sell_ratio': 0.30},
     ],
-    
-    # 2. وقف متحرك للباقي (40%)
     'trailing_stop': {
-        'activation': 3.0,      # تفعيل بعد +3%
-        'distance': 2.0,        # مسافة 2%
-        'apply_to': 'remaining' # يطبق على الكمية المتبقية
+        'activation': 3.0,
+        'distance': 2.0,
+        'apply_to': 'remaining'
     },
-    
-    # 3. وقف خسارة ثابت (حماية قصوى)
     'hard_stop_loss': -2.5
 }
 
@@ -109,9 +109,6 @@ SNAPSHOT_FILE = f"{LOG_DIR}/market_snapshots.csv"
 ERRORS_FILE = f"{LOG_DIR}/errors_log.csv"
 DB_FILE = f"{LOG_DIR}/bot_state.db"
 
-# =========================================================
-# قاعدة البيانات
-# =========================================================
 def init_database():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -209,15 +206,7 @@ class EntryRangeCalculator:
         else:
             position, position_text = "inside", "✅ في النطاق المثالي"
         
-        # استخدام استراتيجية الخروج المثلى
-        take_profits = []
-        for tp in EXIT_STRATEGY['partial_take_profit']:
-            take_profits.append({
-                'percent': tp['percent'],
-                'price': current_price * (1 + tp['percent']/100),
-                'sell_ratio': tp['sell_ratio'] * 100
-            })
-        
+        take_profits = [{'percent': tp['percent'], 'price': current_price * (1 + tp['percent']/100), 'sell_ratio': tp['sell_ratio'] * 100} for tp in EXIT_STRATEGY['partial_take_profit']]
         stop_loss = current_price * (1 + EXIT_STRATEGY['hard_stop_loss']/100)
         trailing_activation = current_price * (1 + EXIT_STRATEGY['trailing_stop']['activation']/100)
         
@@ -250,7 +239,7 @@ class EntryRangeCalculator:
             return {'action': '👀 راقب فقط - لا تدخل', 'allocation': '0%', 'urgency': 'مراقبة'}
 
 # =========================================================
-# مدير الصفقات النشطة (مع استراتيجية الخروج المثلى)
+# مدير الصفقات النشطة
 # =========================================================
 class TradeManager:
     def __init__(self):
@@ -263,137 +252,70 @@ class TradeManager:
         self.winning_trades = 0
         
     def open_trade(self, signal: ExplosionSignal, allocation_ratio: float = 1.0) -> bool:
-        """فتح صفقة جديدة"""
         symbol = signal.symbol
-        
-        if symbol in self.active_trades:
+        if symbol in self.active_trades or len(self.active_trades) >= MAX_CONCURRENT_TRADES or self.daily_trades >= MAX_TRADES_PER_DAY:
             return False
-        
-        if len(self.active_trades) >= MAX_CONCURRENT_TRADES:
-            return False
-        
-        if self.daily_trades >= MAX_TRADES_PER_DAY:
-            return False
-        
         capital = CAPITAL_PER_TRADE * allocation_ratio
         if capital > self.available_capital:
             return False
-        
         quantity = capital / signal.entry_price
         self.available_capital -= capital
         self.daily_trades += 1
         self.total_trades += 1
-        
-        trade = ActiveTrade(
-            symbol=symbol,
-            entry_price=signal.entry_price,
-            capital=capital,
-            quantity=quantity,
-            remaining_quantity=quantity,
-            entry_time=datetime.now(),
-            highest_price=signal.entry_price,
-            trailing_stop=0,
-            trailing_activated=False,
-            take_profits_hit=[],
-            pattern=signal.patterns[0] if signal.patterns else 'unknown',
-            confidence=signal.confidence
-        )
-        
+        trade = ActiveTrade(symbol=symbol, entry_price=signal.entry_price, capital=capital, quantity=quantity, remaining_quantity=quantity, entry_time=datetime.now(), highest_price=signal.entry_price, trailing_stop=0, trailing_activated=False, take_profits_hit=[], pattern=signal.patterns[0] if signal.patterns else 'unknown', confidence=signal.confidence)
         self.active_trades[symbol] = trade
         return True
     
     def update_trade(self, symbol: str, current_price: float) -> Optional[dict]:
-        """تحديث الصفقة وتطبيق استراتيجية الخروج المثلى"""
         if symbol not in self.active_trades:
             return None
-        
         trade = self.active_trades[symbol]
-        
-        # تحديث أعلى سعر
         if current_price > trade.highest_price:
             trade.highest_price = current_price
-        
-        # حساب الربح الحالي
         pnl_pct = (current_price - trade.entry_price) / trade.entry_price * 100
         
-        # 1. فحص وقف الخسارة الثابت
         if pnl_pct <= EXIT_STRATEGY['hard_stop_loss']:
             return self._close_trade(symbol, current_price, pnl_pct, 'hard_stop_loss')
         
-        # 2. تطبيق جني الأرباح الجزئي
         for tp in EXIT_STRATEGY['partial_take_profit']:
             if tp['percent'] not in trade.take_profits_hit and pnl_pct >= tp['percent']:
-                # بيع جزئي
                 sell_quantity = trade.quantity * tp['sell_ratio']
                 trade.remaining_quantity -= sell_quantity
                 trade.take_profits_hit.append(tp['percent'])
-                
-                # إعادة رأس المال + الربح
                 sell_value = sell_quantity * current_price
                 self.available_capital += sell_value
-                
                 print(f"  💰 {symbol}: جني أرباح جزئي +{tp['percent']}% (تم بيع {tp['sell_ratio']*100:.0f}%)")
-                
-                # إذا تم بيع كل الكمية
                 if trade.remaining_quantity <= 0:
                     return self._close_trade(symbol, current_price, pnl_pct, 'fully_sold')
         
-        # 3. تطبيق الوقف المتحرك على الكمية المتبقية
         if trade.remaining_quantity > 0:
             activation_price = trade.entry_price * (1 + EXIT_STRATEGY['trailing_stop']['activation']/100)
-            
             if current_price >= activation_price:
                 if not trade.trailing_activated:
                     trade.trailing_activated = True
                     trade.trailing_stop = current_price * (1 - EXIT_STRATEGY['trailing_stop']['distance']/100)
                     print(f"  🔄 {symbol}: تم تفعيل الوقف المتحرك عند +{EXIT_STRATEGY['trailing_stop']['activation']}%")
                 else:
-                    # تحديث الوقف المتحرك (يتحرك للأعلى فقط)
                     new_stop = current_price * (1 - EXIT_STRATEGY['trailing_stop']['distance']/100)
                     if new_stop > trade.trailing_stop:
                         trade.trailing_stop = new_stop
-                
-                # فحص إذا ضرب الوقف المتحرك
                 if trade.trailing_activated and current_price <= trade.trailing_stop:
                     return self._close_trade(symbol, current_price, pnl_pct, 'trailing_stop')
-        
         return None
     
     def _close_trade(self, symbol: str, price: float, pnl_pct: float, reason: str) -> dict:
-        """إغلاق الصفقة"""
         trade = self.active_trades[symbol]
-        
-        # بيع الكمية المتبقية
         if trade.remaining_quantity > 0:
             sell_value = trade.remaining_quantity * price
             self.available_capital += sell_value
-        
-        # حساب الربح الإجمالي
         total_pnl_usd = trade.capital * pnl_pct / 100
         self.daily_pnl += pnl_pct
-        
         if pnl_pct > 0:
             self.winning_trades += 1
-        
-        result = {
-            'symbol': symbol,
-            'entry_price': trade.entry_price,
-            'exit_price': price,
-            'pnl_pct': pnl_pct,
-            'pnl_usd': total_pnl_usd,
-            'entry_time': trade.entry_time,
-            'exit_time': datetime.now(),
-            'pattern': trade.pattern,
-            'confidence': trade.confidence,
-            'exit_reason': reason,
-            'take_profits_hit': trade.take_profits_hit
-        }
-        
+        result = {'symbol': symbol, 'entry_price': trade.entry_price, 'exit_price': price, 'pnl_pct': pnl_pct, 'pnl_usd': total_pnl_usd, 'entry_time': trade.entry_time, 'exit_time': datetime.now(), 'pattern': trade.pattern, 'confidence': trade.confidence, 'exit_reason': reason, 'take_profits_hit': trade.take_profits_hit}
         self.closed_trades.append(result)
         del self.active_trades[symbol]
-        
         print(f"  🏁 {symbol}: {pnl_pct:+.2f}% | {reason} | متاح: {self.available_capital:.2f}$")
-        
         return result
     
     def get_win_rate(self) -> float:
@@ -411,30 +333,21 @@ class ExplosionDetector:
         self.last_signal_time = {}
         
     async def scan_market(self, exchange) -> List[ExplosionSignal]:
-        print(f"\n{'='*60}")
-        print(f"🔍 مسح السوق - {datetime.now().strftime('%H:%M:%S')}")
-        print(f"{'='*60}")
-        
+        print(f"\n{'='*60}\n🔍 مسح السوق - {datetime.now().strftime('%H:%M:%S')}\n{'='*60}")
         symbols = await self._get_active_symbols(exchange)
         print(f"📊 جاري فحص {len(symbols)} عملة...")
-        
         all_signals = []
-        
         for i in range(0, len(symbols), SCAN_BATCH_SIZE):
             batch = symbols[i:i+SCAN_BATCH_SIZE]
             tasks = [self._analyze_symbol(exchange, sym) for sym in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            
             for result in results:
-                if isinstance(result, ExplosionSignal):
-                    if self._should_accept_signal(result):
-                        all_signals.append(result)
-                        self._record_signal(result)
-            
+                if isinstance(result, ExplosionSignal) and self._should_accept_signal(result):
+                    all_signals.append(result)
+                    self._record_signal(result)
             progress = min(i + SCAN_BATCH_SIZE, len(symbols))
             print(f"   📊 تقدم: {progress}/{len(symbols)} ({progress*100//len(symbols)}%)")
             await asyncio.sleep(0.2)
-        
         all_signals.sort(key=lambda x: (x.priority, x.confidence), reverse=True)
         return all_signals
     
@@ -442,28 +355,19 @@ class ExplosionDetector:
         try:
             tickers = await exchange.fetch_tickers()
             active = []
-            
             for sym, ticker in tickers.items():
                 if not sym.endswith('/USDT'):
                     continue
-                
                 volume = ticker.get('quoteVolume', 0)
                 if volume < MIN_VOLUME_24H:
                     continue
-                
                 change = ticker.get('percentage', 0)
                 if change > MAX_PRICE_CHANGE_24H or change < -15:
                     continue
-                
-                bid = ticker.get('bid', 0)
-                ask = ticker.get('ask', 0)
-                if bid > 0 and ask > 0:
-                    spread = (ask - bid) / bid * 100
-                    if spread > MAX_SPREAD:
-                        continue
-                
+                bid, ask = ticker.get('bid', 0), ticker.get('ask', 0)
+                if bid > 0 and ask > 0 and (ask - bid) / bid * 100 > MAX_SPREAD:
+                    continue
                 active.append(sym)
-            
             active.sort(key=lambda x: tickers[x].get('quoteVolume', 0), reverse=True)
             return active[:SCAN_SYMBOLS_LIMIT]
         except Exception as e:
@@ -475,144 +379,108 @@ class ExplosionDetector:
             ohlcv_1m = await exchange.fetch_ohlcv(symbol, '1m', limit=60)
             ohlcv_5m = await exchange.fetch_ohlcv(symbol, '5m', limit=30)
             ticker = await exchange.fetch_ticker(symbol)
-            
             if len(ohlcv_1m) < 30 or len(ohlcv_5m) < 20:
                 return None
-            
-            data_1m = np.array(ohlcv_1m)
-            data_5m = np.array(ohlcv_5m)
-            
-            closes_1m = data_1m[:, 4]
-            volumes_1m = data_1m[:, 5]
-            closes_5m = data_5m[:, 4]
-            volumes_5m = data_5m[:, 5]
-            
+            data_1m = np.array(ohlcv_1m); data_5m = np.array(ohlcv_5m)
+            closes_1m, volumes_1m = data_1m[:, 4], data_1m[:, 5]
+            closes_5m, volumes_5m = data_5m[:, 4], data_5m[:, 5]
             current_price = ticker['last']
-            
             detected_patterns = []
             total_confidence = 0
-            time_to_explosion = 0
             time_weights = 0
+            time_to_explosion = 0
             
-            calm = self._check_calm_before_storm(volumes_5m, closes_5m)
-            if calm['detected'] and 'calm_before_storm' in ALLOWED_PATTERNS:
-                detected_patterns.append(calm['name'])
-                total_confidence += self.pattern_weights['calm_before_storm']
-                time_to_explosion += calm['time_estimate'] * self.pattern_weights['calm_before_storm']
-                time_weights += self.pattern_weights['calm_before_storm']
-            
-            whale = self._check_whale_accumulation(volumes_1m, closes_1m)
-            if whale['detected'] and 'whale_accumulation' in ALLOWED_PATTERNS:
-                detected_patterns.append(whale['name'])
-                total_confidence += self.pattern_weights['whale_accumulation']
-                time_to_explosion += whale['time_estimate'] * self.pattern_weights['whale_accumulation']
-                time_weights += self.pattern_weights['whale_accumulation']
-            
-            boll = self._check_bollinger_squeeze(closes_5m)
-            if boll['detected'] and 'bollinger_squeeze' in ALLOWED_PATTERNS:
-                detected_patterns.append(boll['name'])
-                total_confidence += self.pattern_weights['bollinger_squeeze']
-                time_to_explosion += boll['time_estimate'] * self.pattern_weights['bollinger_squeeze']
-                time_weights += self.pattern_weights['bollinger_squeeze']
+            # فحص الأنماط المسموحة
+            checks = []
+            if 'calm_before_storm' in ALLOWED_PATTERNS:
+                checks.append(self._check_calm_before_storm(volumes_5m, closes_5m))
+            if 'whale_accumulation' in ALLOWED_PATTERNS:
+                checks.append(self._check_whale_accumulation(volumes_1m, closes_1m))
+            if 'bollinger_squeeze' in ALLOWED_PATTERNS:
+                checks.append(self._check_bollinger_squeeze(closes_5m))
+                
+            for check in checks:
+                if check['detected']:
+                    detected_patterns.append(check['name'])
+                    pattern_name = check.get('pattern_name')
+                    if pattern_name and pattern_name in self.pattern_weights:
+                        total_confidence += self.pattern_weights[pattern_name]
+                        time_to_explosion += check['time_estimate'] * self.pattern_weights[pattern_name]
+                        time_weights += self.pattern_weights[pattern_name]
+                    else:
+                        total_confidence += 20
+                        time_to_explosion += check['time_estimate'] * 20
+                        time_weights += 20
             
             if total_confidence >= MIN_CONFIDENCE and len(detected_patterns) >= MIN_PATTERNS_REQUIRED:
                 avg_time = int(time_to_explosion / time_weights) if time_weights > 0 else 180
                 expected_move = self._calculate_expected_move(total_confidence, len(detected_patterns))
                 priority = self._calculate_priority(total_confidence, len(detected_patterns), avg_time)
-                
-                return ExplosionSignal(
-                    symbol=symbol,
-                    confidence=min(100, total_confidence),
-                    expected_move=expected_move,
-                    time_to_explosion=avg_time,
-                    entry_price=current_price,
-                    patterns=detected_patterns,
-                    volume_24h=ticker.get('quoteVolume', 0),
-                    current_change=ticker.get('percentage', 0),
-                    priority=priority
-                )
+                return ExplosionSignal(symbol=symbol, confidence=min(100, total_confidence), expected_move=expected_move, time_to_explosion=avg_time, entry_price=current_price, patterns=detected_patterns, volume_24h=ticker.get('quoteVolume', 0), current_change=ticker.get('percentage', 0), priority=priority)
         except Exception:
             pass
-        
         return None
     
-    def _check_calm_before_storm(self, volumes: np.ndarray, closes: np.ndarray) -> dict:
-        if len(volumes) < 15 or len(closes) < 10:
-            return {'detected': False}
+    def _check_calm_before_storm(self, volumes, closes):
+        if len(volumes) < 15 or len(closes) < 10: return {'detected': False}
         recent_vol = np.mean(volumes[-5:])
         older_vol = np.mean(volumes[-15:-5])
         vol_ratio = recent_vol / older_vol if older_vol > 0 else 1
         recent_closes = closes[-8:]
         price_range = (np.max(recent_closes) - np.min(recent_closes)) / np.mean(recent_closes) * 100
         if vol_ratio < 0.5 and price_range < 2.0:
-            return {'detected': True, 'name': '🌊 هدوء قبل العاصفة', 'time_estimate': 300}
+            return {'detected': True, 'name': '🌊 هدوء قبل العاصفة', 'time_estimate': 300, 'pattern_name': 'calm_before_storm'}
         return {'detected': False}
     
-    def _check_whale_accumulation(self, volumes: np.ndarray, closes: np.ndarray) -> dict:
-        if len(volumes) < 10 or len(closes) < 5:
-            return {'detected': False}
+    def _check_whale_accumulation(self, volumes, closes):
+        if len(volumes) < 10 or len(closes) < 5: return {'detected': False}
         current_vol = volumes[-1]
         avg_vol = np.mean(volumes[-10:])
         vol_ratio = current_vol / avg_vol if avg_vol > 0 else 1
         recent_closes = closes[-5:]
         price_stability = (np.max(recent_closes) - np.min(recent_closes)) / np.mean(recent_closes) * 100
         if vol_ratio > 1.5 and price_stability < 1.5:
-            return {'detected': True, 'name': f'🐋 تجميع حيتان ({vol_ratio:.1f}x)', 'time_estimate': 180}
+            return {'detected': True, 'name': f'🐋 تجميع حيتان ({vol_ratio:.1f}x)', 'time_estimate': 180, 'pattern_name': 'whale_accumulation'}
         return {'detected': False}
     
-    def _check_bollinger_squeeze(self, closes: np.ndarray) -> dict:
-        if len(closes) < 20:
-            return {'detected': False}
+    def _check_bollinger_squeeze(self, closes):
+        if len(closes) < 20: return {'detected': False}
         recent = closes[-20:]
         current = closes[-1]
-        middle = np.mean(recent)
-        std = np.std(recent)
-        upper = middle + 2 * std
-        lower = middle - 2 * std
+        middle, std = np.mean(recent), np.std(recent)
+        upper, lower = middle + 2 * std, middle - 2 * std
         bandwidth = (upper - lower) / middle * 100
         price_position = (current - lower) / (upper - lower) if upper != lower else 0.5
         if bandwidth < 5.0 and price_position < 0.4:
-            return {'detected': True, 'name': f'🎯 انضغاط بولنجر ({bandwidth:.1f}%)', 'time_estimate': 240}
+            return {'detected': True, 'name': f'🎯 انضغاط بولنجر ({bandwidth:.1f}%)', 'time_estimate': 240, 'pattern_name': 'bollinger_squeeze'}
         return {'detected': False}
     
-    def _calculate_expected_move(self, confidence: float, pattern_count: int) -> float:
+    def _calculate_expected_move(self, confidence, pattern_count):
         base = 5.0
-        if pattern_count >= 4:
-            base += 5.0
-        elif pattern_count >= 3:
-            base += 3.0
-        elif pattern_count >= 2:
-            base += 1.5
-        if confidence >= 80:
-            base += 2.0
-        elif confidence >= 70:
-            base += 1.0
+        if pattern_count >= 4: base += 5.0
+        elif pattern_count >= 3: base += 3.0
+        elif pattern_count >= 2: base += 1.5
+        if confidence >= 80: base += 2.0
+        elif confidence >= 70: base += 1.0
         return min(15.0, base)
     
-    def _calculate_priority(self, confidence: float, pattern_count: int, time_sec: int) -> int:
+    def _calculate_priority(self, confidence, pattern_count, time_sec):
         priority = 1
-        if confidence >= 85:
-            priority += 2
-        elif confidence >= 75:
-            priority += 1
-        if pattern_count >= 4:
-            priority += 2
-        elif pattern_count >= 3:
-            priority += 1
-        if time_sec < 120:
-            priority += 1
+        if confidence >= 85: priority += 2
+        elif confidence >= 75: priority += 1
+        if pattern_count >= 4: priority += 2
+        elif pattern_count >= 3: priority += 1
+        if time_sec < 120: priority += 1
         return min(5, priority)
     
-    def _should_accept_signal(self, signal: ExplosionSignal) -> bool:
+    def _should_accept_signal(self, signal):
         symbol = signal.symbol
         now = datetime.now()
-        if symbol in self.last_signal_time:
-            last_time = self.last_signal_time[symbol]
-            if (now - last_time).total_seconds() < 300:
-                return False
+        if symbol in self.last_signal_time and (now - self.last_signal_time[symbol]).total_seconds() < 300:
+            return False
         return True
     
-    def _record_signal(self, signal: ExplosionSignal):
+    def _record_signal(self, signal):
         self.recent_signals.append(signal)
         self.last_signal_time[signal.symbol] = datetime.now()
 
@@ -628,21 +496,9 @@ class EnhancedExplosionNotifier:
         
     async def send_explosion_alert(self, signal: ExplosionSignal):
         range_info = self.range_calculator.calculate(signal)
-        
-        if signal.priority >= 5:
-            priority_emoji = "🔴🔴🔴"
-        elif signal.priority >= 4:
-            priority_emoji = "🔴🔴"
-        elif signal.priority >= 3:
-            priority_emoji = "🔴"
-        elif signal.priority >= 2:
-            priority_emoji = "🟡"
-        else:
-            priority_emoji = "🟢"
-        
+        priority_emoji = "🔴🔴🔴" if signal.priority >= 5 else "🔴🔴" if signal.priority >= 4 else "🔴" if signal.priority >= 3 else "🟡"
         patterns_msg = "\n".join(f"  • {p}" for p in signal.patterns)
         range_msg = self._format_entry_range_message(signal, range_info)
-        
         msg = f"""
 {priority_emoji} *انفجار قادم - أولوية {signal.priority}/5*
 {BOT_TAG}
@@ -661,16 +517,13 @@ class EnhancedExplosionNotifier:
 
 🕐 `{datetime.now().strftime('%H:%M:%S')}`
 """
-        
         await self._send_telegram(msg)
     
-    def _format_entry_range_message(self, signal: ExplosionSignal, range_info: dict) -> str:
+    def _format_entry_range_message(self, signal, range_info):
         rec = range_info['recommendation']
-        
         targets_msg = ""
         for i, tp in enumerate(range_info['take_profits'], 1):
             targets_msg += f"   🎯 هدف {i}: +{tp['percent']}% ({tp['price']:.8f}) - بيع {tp['sell_ratio']:.0f}%\n"
-        
         return f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -693,21 +546,12 @@ class EnhancedExplosionNotifier:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
     
-    async def send_summary(self, signals: List[ExplosionSignal]):
-        if not signals:
-            return
-        
+    async def send_summary(self, signals):
+        if not signals: return
         now = datetime.now()
-        if (now - self.last_summary_time).total_seconds() < 1800:  # كل 30 دقيقة
-            return
-        
+        if (now - self.last_summary_time).total_seconds() < 1800: return
         self.last_summary_time = now
-        
-        signals_with_ranges = []
-        for sig in signals[:5]:
-            range_info = self.range_calculator.calculate(sig)
-            signals_with_ranges.append((sig, range_info))
-        
+        signals_with_ranges = [(s, self.range_calculator.calculate(s)) for s in signals[:5]]
         msg = f"""
 📊 *أفضل الفرص - مع استراتيجية الخروج*
 {BOT_TAG}
@@ -715,16 +559,13 @@ class EnhancedExplosionNotifier:
 🎯 *فرص ممتازة (أولوية 4-5):*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
-        
-        excellent = [(s, r) for s, r in signals_with_ranges if s.priority >= 4]
-        for i, (sig, range_info) in enumerate(excellent[:3], 1):
-            rec = range_info['recommendation']
+        for s, r in [(s, r) for s, r in signals_with_ranges if s.priority >= 4][:3]:
+            rec = r['recommendation']
             msg += f"""
-{i}. 🔴🔴 *{sig.symbol}* - ثقة {sig.confidence:.0f}%
-   💰 {sig.entry_price:.8f} | 🎯 {range_info['min']:.8f} - {range_info['max']:.8f}
+• 🔴🔴 *{s.symbol}* - ثقة {s.confidence:.0f}%
+   💰 {s.entry_price:.8f} | 🎯 {r['min']:.8f} - {r['max']:.8f}
    💡 {rec['action']} ({rec['allocation']})
 """
-        
         good = [(s, r) for s, r in signals_with_ranges if s.priority == 3]
         if good:
             msg += """
@@ -733,14 +574,13 @@ class EnhancedExplosionNotifier:
 📋 *فرص جيدة (أولوية 3):*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
-            for i, (sig, range_info) in enumerate(good[:2], 1):
-                rec = range_info['recommendation']
+            for s, r in good[:2]:
+                rec = r['recommendation']
                 msg += f"""
-{i}. 🔴 *{sig.symbol}* - ثقة {sig.confidence:.0f}%
-   💰 {sig.entry_price:.8f} | 🎯 {range_info['min']:.8f} - {range_info['max']:.8f}
+• 🔴 *{s.symbol}* - ثقة {s.confidence:.0f}%
+   💰 {s.entry_price:.8f} | 🎯 {r['min']:.8f} - {r['max']:.8f}
    💡 {rec['action']} ({rec['allocation']})
 """
-        
         msg += f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -751,7 +591,6 @@ class EnhancedExplosionNotifier:
 
 🕐 `{datetime.now().strftime('%H:%M:%S')}`
 """
-        
         await self._send_telegram(msg)
     
     async def send_startup_message(self):
@@ -779,7 +618,6 @@ class EnhancedExplosionNotifier:
         win_rate = trade_manager.get_win_rate()
         net_pnl = trade_manager.available_capital - TOTAL_CAPITAL
         net_pnl_pct = (net_pnl / TOTAL_CAPITAL) * 100
-        
         msg = f"""
 📊 *التقرير اليومي*
 {BOT_TAG}
@@ -808,7 +646,6 @@ class EnhancedExplosionNotifier:
         await self._send_telegram(msg)
 
     async def send_heartbeat(self, engine):
-        """💓 نبضة قلب للتأكد من أن النظام يعمل"""
         msg = f"""
 💓 *نبضة قلب - النظام يعمل*
 {BOT_TAG}
@@ -826,11 +663,7 @@ class EnhancedExplosionNotifier:
         try:
             url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
             async with httpx.AsyncClient(timeout=10) as client:
-                await client.post(url, json={
-                    "chat_id": self.telegram_chat_id,
-                    "text": message.strip(),
-                    "parse_mode": "Markdown"
-                })
+                await client.post(url, json={"chat_id": self.telegram_chat_id, "text": message.strip(), "parse_mode": "Markdown"})
         except Exception as e:
             print(f"⚠️ خطأ تليجرام: {e}")
 
@@ -851,23 +684,14 @@ class MarketRegimeFilter:
             ema20, ema50 = self._ema(closes, 20), self._ema(closes, 50)
             trend = "bullish" if ema20[-1] > ema50[-1] else "bearish"
             btc_change_1h = ((closes[-1] - closes[-4]) / closes[-4]) * 100 if len(closes) >= 4 else 0
-            
             can_trade = adx >= BTC_MIN_ADX and btc_change_1h > BTC_MAX_DROP_1H
-            
-            self.regime_data = {
-                'regime': 'trending_bullish' if trend == 'bullish' else 'trending_bearish',
-                'adx': round(adx, 1),
-                'btc_change_1h': round(btc_change_1h, 2),
-                'can_trade': can_trade,
-                'trend': trend
-            }
+            self.regime_data = {'regime': 'trending_bullish' if trend == 'bullish' else 'trending_bearish', 'adx': round(adx, 1), 'btc_change_1h': round(btc_change_1h, 2), 'can_trade': can_trade, 'trend': trend}
             return self.regime_data
         except:
             return {'can_trade': True, 'trend': 'unknown', 'adx': 0, 'btc_change_1h': 0}
     
     def _calc_adx(self, h, l, c, p=14):
-        if len(c) < p + 1:
-            return 20
+        if len(c) < p + 1: return 20
         tr1, tr2, tr3 = h[1:] - l[1:], np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])
         tr = np.maximum(np.maximum(tr1, tr2), tr3)
         atr = np.mean(tr[-p:]) if len(tr) >= p else np.mean(tr)
@@ -883,8 +707,7 @@ class MarketRegimeFilter:
         alpha, ema = 2 / (p + 1), np.zeros_like(data)
         if len(data) >= p:
             ema[p - 1] = np.mean(data[:p])
-            for i in range(p, len(data)):
-                ema[i] = data[i] * alpha + ema[i - 1] * (1 - alpha)
+            for i in range(p, len(data)): ema[i] = data[i] * alpha + ema[i - 1] * (1 - alpha)
         return ema
 
 # =========================================================
@@ -895,75 +718,22 @@ engine_instance = None
 
 @app.route('/')
 def dashboard():
-    if not engine_instance:
-        return "Engine not started yet."
-    
+    if not engine_instance: return "Engine not started yet."
     market = engine_instance.market_regime
     stats = engine_instance.last_scan_stats
     tm = engine_instance.trade_manager
-    
     return render_template_string('''
-    <!DOCTYPE html>
-    <html dir="rtl">
-    <head>
-        <title>نظام اكتشاف الانفجارات - الإصدار المثالي</title>
-        <meta charset="utf-8">
-        <meta http-equiv="refresh" content="30">
-        <style>
-            body { font-family: Arial; background: #1a1a2e; color: #eee; margin: 20px; }
-            .card { background: #16213e; border-radius: 10px; padding: 20px; margin: 10px; }
-            .badge { padding: 5px 10px; border-radius: 20px; }
-            .success { background: #0f9d58; }
-            .warning { background: #f4b400; }
-            .danger { background: #d93025; }
-            h1, h2 { color: #fff; }
-            p { margin: 10px 0; }
-            .strategy-box { background: #0f3460; border-radius: 8px; padding: 15px; margin: 10px 0; }
-        </style>
-    </head>
-    <body>
-        <h1>🚂 نظام اكتشاف الانفجارات - الإعدادات المثلى</h1>
-        <div style="display: flex; flex-wrap: wrap;">
-            <div class="card" style="flex: 1;">
-                <h2>📊 حالة السوق</h2>
-                <p>النظام: <span class="badge {{ 'success' if market.trend == 'bullish' else 'danger' }}">{{ market.trend }}</span></p>
-                <p>ADX: {{ market.adx }}</p>
-                <p>BTC 1h: {{ market.btc_change }}%</p>
-                <p>التداول: {{ '✅ مسموح' if market.can_trade else '❌ ممنوع' }}</p>
-            </div>
-            <div class="card" style="flex: 1;">
-                <h2>💰 حالة الحساب</h2>
-                <p>الرصيد المتاح: ${{ "%.2f"|format(tm.available_capital) }}</p>
-                <p>الصفقات النشطة: {{ tm.active_trades|length }}</p>
-                <p>صفقات اليوم: {{ tm.daily_trades }}/{{ max_daily }}</p>
-                <p>نسبة النجاح: {{ "%.1f"|format(tm.get_win_rate()) }}%</p>
-            </div>
-            <div class="card" style="flex: 1;">
-                <h2>🔍 آخر مسح</h2>
-                <p>العملات: {{ stats.scanned }}</p>
-                <p>الإشارات: {{ stats.signals }}</p>
-                <p>المدة: {{ stats.duration }} ثانية</p>
-                <p>الوقت: {{ stats.time }}</p>
-            </div>
-        </div>
-        <div class="card">
-            <h2>⚙️ استراتيجية الخروج النشطة (الإعدادات المثلى)</h2>
-            <div class="strategy-box">
-                <p>🎯 <strong>جني أرباح جزئي:</strong> +3% (30%) | +5% (30%)</p>
-                <p>🔄 <strong>وقف متحرك:</strong> تفعيل عند +3% | مسافة 2% (يطبق على 40% المتبقية)</p>
-                <p>🛑 <strong>وقف خسارة ثابت:</strong> -2.5%</p>
-                <p>✅ <strong>النتيجة المتوقعة:</strong> ربح +4.28% لكل صفقة | نجاح 82%</p>
-            </div>
-        </div>
-        <p style="text-align: center; opacity: 0.7;">آخر تحديث: {{ now }}</p>
-    </body>
-    </html>
-    ''',
-    market=market,
-    stats=stats,
-    tm=tm,
-    max_daily=MAX_TRADES_PER_DAY,
-    now=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    <!DOCTYPE html><html dir="rtl"><head><title>نظام اكتشاف الانفجارات</title><meta charset="utf-8"><meta http-equiv="refresh" content="30">
+    <style>body{font-family:Arial;background:#1a1a2e;color:#eee;margin:20px}.card{background:#16213e;border-radius:10px;padding:20px;margin:10px}.badge{padding:5px 10px;border-radius:20px}.success{background:#0f9d58}.warning{background:#f4b400}.danger{background:#d93025}h1,h2{color:#fff}p{margin:10px 0}.strategy-box{background:#0f3460;border-radius:8px;padding:15px;margin:10px 0}</style></head><body>
+    <h1>🚂 نظام اكتشاف الانفجارات - الإعدادات المخففة</h1>
+    <div style="display:flex;flex-wrap:wrap">
+    <div class="card" style="flex:1"><h2>📊 حالة السوق</h2><p>النظام: <span class="badge {{'success' if market.trend=='bullish' else 'danger'}}">{{market.trend}}</span></p><p>ADX: {{market.adx}}</p><p>BTC 1h: {{market.btc_change}}%</p><p>التداول: {{'✅ مسموح' if market.can_trade else '❌ ممنوع'}}</p></div>
+    <div class="card" style="flex:1"><h2>💰 حالة الحساب</h2><p>الرصيد المتاح: ${{"%.2f"|format(tm.available_capital)}}</p><p>الصفقات النشطة: {{tm.active_trades|length}}</p><p>صفقات اليوم: {{tm.daily_trades}}/{{max_daily}}</p><p>نسبة النجاح: {{"%.1f"|format(tm.get_win_rate())}}%</p></div>
+    <div class="card" style="flex:1"><h2>🔍 آخر مسح</h2><p>العملات: {{stats.scanned}}</p><p>الإشارات: {{stats.signals}}</p><p>المدة: {{stats.duration}} ثانية</p><p>الوقت: {{stats.time}}</p></div>
+    </div>
+    <div class="card"><h2>⚙️ استراتيجية الخروج النشطة</h2><div class="strategy-box"><p>🎯 <strong>جني أرباح جزئي:</strong> +3% (30%) | +5% (30%)</p><p>🔄 <strong>وقف متحرك:</strong> تفعيل عند +3% | مسافة 2%</p><p>🛑 <strong>وقف خسارة ثابت:</strong> -2.5%</p></div></div>
+    <p style="text-align:center;opacity:0.7">آخر تحديث: {{now}}</p></body></html>''',
+    market=market, stats=stats, tm=tm, max_daily=MAX_TRADES_PER_DAY, now=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
 
 @app.route('/health')
 def health():
@@ -1027,37 +797,19 @@ class ExplosionScannerEngine:
         self.market_regime = {}
         self.last_scan_stats = {'scanned': 0, 'signals': 0, 'duration': 0, 'time': '-'}
         self.last_daily_report = datetime.now()
-        self.last_heartbeat = datetime.now()  # 🆕 لتتبع نبضات القلب
+        self.last_heartbeat = datetime.now()
         
     async def run(self):
         global engine_instance
         engine_instance = self
-        
-        print("""
-╔══════════════════════════════════════════════════════════╗
-║                                                          ║
-║     💥 نظام اكتشاف الانفجارات - الإعدادات المثلى 💥      ║
-║                                                          ║
-║     • استراتيجية خروج متكاملة (جني أرباح + وقف متحرك)    ║
-║     • نطاق دخول مثالي لكل إشارة                         ║
-║     • إشعارات تليجرام متقدمة                            ║
-║     • إدارة صفقات ذكية                                   ║
-║                                                          ║
-╚══════════════════════════════════════════════════════════╝
-        """)
-        
+        print("╔══════════════════════════════════════════════════════════╗\n║     💥 نظام اكتشاف الانفجارات - إعدادات مخففة 💥      ║\n╚══════════════════════════════════════════════════════════╝")
         exchange = ccxt_async.gateio({'enableRateLimit': True, 'rateLimit': 100})
-        
         await self.notifier.send_startup_message()
-        
         try:
             while True:
                 self.scan_count += 1
                 start_time = time.time()
-                
                 self.market_regime = await self.market_filter.analyze(exchange)
-                
-                # تحديث الصفقات النشطة
                 if self.trade_manager.active_trades:
                     for symbol in list(self.trade_manager.active_trades.keys()):
                         try:
@@ -1067,64 +819,36 @@ class ExplosionScannerEngine:
                                 print(f"  🏁 {symbol}: {result['pnl_pct']:+.2f}% | {result['exit_reason']}")
                         except Exception as e:
                             print(f"  ⚠️ خطأ في تحديث {symbol}: {e}")
-                
-                # مسح السوق
                 if self.market_regime.get('can_trade', True):
                     signals = await self.detector.scan_market(exchange)
-                    
                     if signals:
                         print(f"\n🎯 تم اكتشاف {len(signals)} عملة مرشحة للانفجار!")
-                        
-                        # فتح صفقات للإشارات القوية
                         available_slots = MAX_CONCURRENT_TRADES - len(self.trade_manager.active_trades)
                         for signal in signals[:available_slots]:
-                            if signal.priority >= 3:
-                                # تحديد نسبة التخصيص
-                                if signal.priority >= 4:
-                                    allocation = 1.0
-                                elif signal.priority >= 3:
-                                    allocation = 0.75
-                                else:
-                                    allocation = 0.5
-                                
+                            if signal.priority >= 2:
+                                allocation = 1.0 if signal.priority >= 4 else 0.75 if signal.priority >= 3 else 0.5
                                 if self.trade_manager.open_trade(signal, allocation):
                                     await self.notifier.send_explosion_alert(signal)
                                     self.total_signals += 1
                                     await asyncio.sleep(1)
-                        
                         await self.notifier.send_summary(signals)
                     else:
                         print("\n⚪ لا توجد عملات مرشحة للانفجار حالياً")
                 else:
-                    print(f"\n⚠️ التداول متوقف: ADX={self.market_regime.get('adx', 0)}, BTC={self.market_regime.get('btc_change_1h', 0):+.2f}%")
-                
+                    print(f"\n⚠️ التداول متوقف")
                 elapsed = time.time() - start_time
-                self.last_scan_stats = {
-                    'scanned': SCAN_SYMBOLS_LIMIT,
-                    'signals': len(signals) if 'signals' in locals() else 0,
-                    'duration': round(elapsed, 2),
-                    'time': datetime.now().strftime('%H:%M:%S')
-                }
-                
-                # 🆕 نبضة قلب كل ساعتين
+                self.last_scan_stats = {'scanned': SCAN_SYMBOLS_LIMIT, 'signals': len(signals) if 'signals' in locals() else 0, 'duration': round(elapsed, 2), 'time': datetime.now().strftime('%H:%M:%S')}
                 if (datetime.now() - self.last_heartbeat).total_seconds() > 7200:
                     await self.notifier.send_heartbeat(self)
                     self.last_heartbeat = datetime.now()
-                
-                # تقرير يومي
                 now = datetime.now()
                 if now.hour == 23 and now.minute >= 55 and (now - self.last_daily_report).total_seconds() > 3600:
                     await self.notifier.send_daily_report(self.trade_manager)
                     self.last_daily_report = now
-                
                 print(f"\n📊 دورة #{self.scan_count} | ⏱️ {elapsed:.1f} ثانية | الصفقات النشطة: {len(self.trade_manager.active_trades)}")
-                print(f"{'='*60}")
-                
                 await asyncio.sleep(SCAN_INTERVAL)
-                
         except KeyboardInterrupt:
             print("\n⏹️ إيقاف النظام...")
-            await self.notifier.send_daily_report(self.trade_manager)
         finally:
             await exchange.close()
 
@@ -1137,11 +861,8 @@ async def main():
     flask_thread = threading.Thread(target=start_flask, daemon=True)
     flask_thread.start()
     engine = ExplosionScannerEngine()
-    
-    # 🆕 تشغيل مستمع أوامر تليجرام
     poller = TelegramPoller(TELEGRAM_TOKEN, engine)
     asyncio.create_task(poller.start())
-    
     await engine.run()
 
 if __name__ == "__main__":

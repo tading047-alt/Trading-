@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🚂 نظام اكتشاف الانفجارات - v38.1 (إشعارات الصفقات كاملة)
-First Station Explosion Detector - Full Notifications Edition
+🚂 نظام اكتشاف الانفجارات - الإصدار v40.0 (إشعارات وأوامر موثوقة)
+First Station Explosion Detector - Reliable Notifications & Commands
 """
 
 import asyncio, threading, sqlite3, pandas as pd, numpy as np, httpx, json, os, time, csv
@@ -23,17 +23,15 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "5067771509")
 BOT_TAG = "#Exp100"
 
 # =========================================================
-# 🎯 وضع الصيد المفتوح (إزالة الحدود)
+# وضع الصيد المفتوح
 # =========================================================
 MAX_TRADES_PER_DAY = 999
 MAX_CONCURRENT_TRADES = 10
 TOTAL_CAPITAL = 1000.0
 CAPITAL_PER_TRADE = 50.0
-
 SCAN_INTERVAL = 30
 SCAN_BATCH_SIZE = 100
 SCAN_SYMBOLS_LIMIT = 500
-
 MIN_CONFIDENCE = 40
 MIN_PATTERNS_REQUIRED = 1
 MIN_VOLUME_24H = 20000
@@ -131,7 +129,7 @@ class ActiveTrade:
     pattern: str; confidence: float; atr_percent: float = 0.0; is_micro_pump: bool = False
 
 # =========================================================
-# مدير الصفقات (مع إشعارات الإغلاق)
+# مدير الصفقات (مع إشعار الخروج)
 # =========================================================
 class TradeManager:
     def __init__(self, notifier=None):
@@ -139,16 +137,16 @@ class TradeManager:
         self.closed_trades: List[dict] = []
         self.available_capital = TOTAL_CAPITAL
         self.daily_trades = 0; self.daily_pnl = 0.0; self.total_trades = 0; self.winning_trades = 0
-        self.notifier = notifier  # لاستدعاء إشعارات الإغلاق
+        self.notifier = notifier
 
-    def open_trade(self, signal: ExplosionSignal) -> bool:
+    def open_trade(self, signal: ExplosionSignal) -> Tuple[bool, float]:
         symbol = signal.symbol
-        if symbol in self.active_trades: return False
+        if symbol in self.active_trades: return False, 0.0
         max_con = MAX_CONCURRENT_TRADES
         if signal.is_micro_pump: max_con = MICRO_PUMP_MAX_CONCURRENT
-        if len(self.active_trades) >= max_con: return False
+        if len(self.active_trades) >= max_con: return False, 0.0
         capital = MICRO_PUMP_CAPITAL_PER_TRADE if signal.is_micro_pump else CAPITAL_PER_TRADE
-        if capital > self.available_capital: return False
+        if capital > self.available_capital: return False, 0.0
         quantity = capital / signal.entry_price
         self.available_capital -= capital
         self.daily_trades += 1; self.total_trades += 1
@@ -161,9 +159,8 @@ class TradeManager:
                             is_micro_pump=signal.is_micro_pump)
         self.active_trades[symbol] = trade
         print(f"  ✅ {symbol}: دخول ناجح! الثقة={signal.confidence:.0f}% | المبلغ={capital:.1f}$")
-        return True
+        return True, capital
 
-    # --- update_trade مطابق للإصدارات السابقة (بدون تغيير) ---
     def update_trade(self, symbol: str, current_price: float, ohlcv_5m: Optional[np.ndarray] = None) -> Optional[dict]:
         if symbol not in self.active_trades: return None
         trade = self.active_trades[symbol]
@@ -243,16 +240,16 @@ class TradeManager:
         self.closed_trades.append(result)
         del self.active_trades[symbol]
         print(f"  🏁 {symbol}: {pnl_pct:+.2f}% | {reason} | متاح: {self.available_capital:.2f}$")
-        # 🆕 إرسال إشعار الإغلاق
+        # إشعار الخروج (متزامن، لكننا نطلقه كمهمة لتجنب الحظر)
         if self.notifier:
-            asyncio.create_task(self.notifier.send_trade_closed_alert(result))
+            asyncio.create_task(self.notifier.send_trade_closed_alert(result, self.available_capital))
         return result
 
     def get_win_rate(self) -> float:
         return (self.winning_trades / self.total_trades * 100) if self.total_trades else 0.0
 
 # =========================================================
-# كاشف الانفجارات (مكتمل)
+# كاشف الانفجارات (مطابق للإصدار السابق، مع تصحيح بسيط)
 # =========================================================
 class ExplosionDetector:
     def __init__(self):
@@ -359,12 +356,12 @@ class ExplosionDetector:
                     total_conf += w; time_exp += check['time_estimate'] * w; time_w += w
             if total_conf >= MIN_CONFIDENCE and len(detected_patterns) >= MIN_PATTERNS_REQUIRED:
                 avg_time = int(time_exp / time_w) if time_w else 180
+                priority = self._calculate_priority(total_conf, len(detected_patterns), avg_time)
                 return ExplosionSignal(symbol=symbol, confidence=min(100, total_conf),
                     expected_move=6.0, time_to_explosion=avg_time, entry_price=current_price,
                     patterns=detected_patterns, volume_24h=ticker.get('quoteVolume',0),
                     current_change=ticker.get('percentage',0),
-                    priority=self._calculate_priority(total_conf, len(detected_patterns), avg_time),
-                    atr_percent=round(atr_percent,2))
+                    priority=priority, atr_percent=round(atr_percent,2))
         except: return None
         return None
 
@@ -416,7 +413,7 @@ class ExplosionDetector:
     def _record_signal(self, signal): self.recent_signals.append(signal); self.last_signal_time[signal.symbol]=datetime.now()
 
 # =========================================================
-# نظام الإشعارات الكامل (فتح + إغلاق + تحميل)
+# نظام الإشعارات (موثوق)
 # =========================================================
 class EnhancedExplosionNotifier:
     def __init__(self):
@@ -441,7 +438,7 @@ class EnhancedExplosionNotifier:
 """
         await self._send_telegram(msg)
 
-    async def send_trade_closed_alert(self, result: dict):
+    async def send_trade_closed_alert(self, result: dict, available_capital: float):
         emoji = "💰" if result['pnl_pct'] > 0 else "📉"
         msg = f"""
 {emoji} *إغلاق صفقة*
@@ -450,15 +447,14 @@ class EnhancedExplosionNotifier:
 🪙 {result['symbol']}
 📊 الربح: {result['pnl_pct']:+.2f}% ({result['pnl_usd']:+.2f}$)
 🎯 السبب: {result['exit_reason']}
-💵 الرصيد الحالي: {self.available_capital:.2f}$
+💵 الرصيد الحالي: {available_capital:.2f}$
 🕐 `{datetime.now().strftime('%H:%M:%S')}`
 """
-        # ملاحظة: الرصيد يتم تمريره من TradeManager
         await self._send_telegram(msg)
 
     async def send_startup_message(self):
         msg = f"""
-🚀 *تم تشغيل نظام الانفجارات – وضع الصيد المفتوح*
+🚀 *تم تشغيل نظام الانفجارات v40.0*
 {BOT_TAG}
 ✅ *النظام يعمل بنجاح!*
 🕐 `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`
@@ -511,10 +507,177 @@ class EnhancedExplosionNotifier:
             url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
             async with httpx.AsyncClient(timeout=10) as client:
                 await client.post(url, json={"chat_id": chat_id, "text": message.strip(), "parse_mode": "Markdown"})
-        except Exception as e: print(f"⚠️ خطأ تليجرام: {e}")
+        except Exception as e:
+            print(f"⚠️ خطأ تليجرام: {e}")
 
 # =========================================================
-# فلتر السوق (مبسط)
+# مستمع أوامر تليجرام (مع معالجة قوية)
+# =========================================================
+class TelegramPoller:
+    def __init__(self, token, engine, notifier):
+        self.token = token
+        self.engine = engine
+        self.notifier = notifier
+        self.last_update_id = 0
+
+    async def start(self):
+        print("🤖 بدء استقبال أوامر تليجرام...")
+        while True:
+            try:
+                url = f"https://api.telegram.org/bot{self.token}/getUpdates"
+                params = {"offset": self.last_update_id + 1, "timeout": 10}
+                async with httpx.AsyncClient(timeout=15) as client:
+                    resp = await client.get(url, params=params)
+                    data = resp.json()
+                if data.get("ok"):
+                    for upd in data["result"]:
+                        self.last_update_id = upd["update_id"]
+                        message = upd.get("message")
+                        if message and "text" in message:
+                            text = message["text"].strip()
+                            chat_id = message["chat"]["id"]
+                            print(f"  📩 أمر وارد: {text}")
+                            if text == "/status":
+                                await self._reply_status(chat_id)
+                            elif text == "/download":
+                                await self.notifier.send_csv_links(chat_id)
+                            elif text == "/open":
+                                await self._reply_open(chat_id)
+                            elif text == "/closed":
+                                await self._reply_closed(chat_id)
+                            elif text == "/stats":
+                                await self._reply_stats(chat_id)
+                            elif text == "/help":
+                                await self._reply_help(chat_id)
+                            else:
+                                await self._send_msg(chat_id, "❌ أمر غير معروف. استخدم /help")
+            except Exception as e:
+                print(f"⚠️ خطأ في poller: {e}")
+            await asyncio.sleep(2)
+
+    async def _reply_status(self, chat_id):
+        engine = self.engine
+        msg = f"""
+📊 *حالة البوت*
+{BOT_TAG}
+🔍 دورات المسح: {engine.scan_count}
+💵 الرصيد: {engine.trade_manager.available_capital:.2f}$
+📊 صفقات نشطة: {len(engine.trade_manager.active_trades)}
+📈 صفقات اليوم: {engine.trade_manager.daily_trades}
+🎯 نسبة النجاح: {engine.trade_manager.get_win_rate():.1f}%
+🕐 `{datetime.now().strftime('%H:%M:%S')}`
+"""
+        await self._send_msg(chat_id, msg)
+
+    async def _reply_open(self, chat_id):
+        active = self.engine.trade_manager.active_trades
+        if not active:
+            await self._send_msg(chat_id, "📊 لا توجد صفقات مفتوحة حالياً.")
+            return
+        msg = f"📊 *الصفقات المفتوحة ({len(active)})*\n{BOT_TAG}\n"
+        for sym, trade in active.items():
+            pnl = (trade.highest_price - trade.entry_price) / trade.entry_price * 100
+            duration = datetime.now() - trade.entry_time
+            hours, remainder = divmod(int(duration.total_seconds()), 3600)
+            minutes = remainder // 60
+            emoji = "🟢" if pnl > 0 else "🔴"
+            msg += f"""
+{emoji} *{sym}*
+   💵 الدخول: {trade.entry_price:.8f}
+   📈 الحالي: {trade.highest_price:.8f}
+   📊 الربح: {pnl:+.2f}%
+   ⏱️ المدة: {hours}h {minutes}m
+"""
+        await self._send_msg(chat_id, msg.strip())
+
+    async def _reply_closed(self, chat_id):
+        closed = self.engine.trade_manager.closed_trades[-10:]
+        if not closed:
+            await self._send_msg(chat_id, "📊 لا توجد صفقات مغلقة بعد.")
+            return
+        msg = f"📊 *آخر {len(closed)} صفقة مغلقة*\n{BOT_TAG}\n"
+        for trade in reversed(closed):
+            emoji = "💰" if trade['pnl_pct'] > 0 else "📉"
+            duration = trade['exit_time'] - trade['entry_time']
+            hours, remainder = divmod(int(duration.total_seconds()), 3600)
+            minutes = remainder // 60
+            msg += f"""
+{emoji} *{trade['symbol']}*
+   📊 النتيجة: {trade['pnl_pct']:+.2f}% ({trade['pnl_usd']:+.2f}$)
+   🎯 النوع: {trade['pattern']}
+   ⏱️ المدة: {hours}h {minutes}m
+   🛑 السبب: {trade['exit_reason']}
+"""
+        await self._send_msg(chat_id, msg.strip())
+
+    async def _reply_stats(self, chat_id):
+        tm = self.engine.trade_manager
+        total = tm.total_trades
+        wins = tm.winning_trades
+        losses = total - wins
+        win_rate = tm.get_win_rate()
+        net_pnl = tm.available_capital - TOTAL_CAPITAL
+
+        pattern_stats = {}
+        for trade in tm.closed_trades:
+            pat = trade.get('pattern', 'غير معروف')
+            if pat not in pattern_stats:
+                pattern_stats[pat] = {'total': 0, 'wins': 0, 'pnl': 0.0, 'usd': 0.0}
+            pattern_stats[pat]['total'] += 1
+            pattern_stats[pat]['pnl'] += trade['pnl_pct']
+            pattern_stats[pat]['usd'] += trade['pnl_usd']
+            if trade['pnl_pct'] > 0:
+                pattern_stats[pat]['wins'] += 1
+
+        msg = f"""
+📊 *إحصائيات الأداء*
+{BOT_TAG}
+
+📈 *إجمالي:*
+━━━━━━━━━━━━━━━━━━━━━━━
+🔄 الصفقات: {total}
+✅ الرابحة: {wins}
+❌ الخاسرة: {losses}
+🎯 نسبة النجاح: {win_rate:.1f}%
+💰 صافي الربح: {net_pnl:+.2f}$
+
+📋 *حسب النوع:*
+━━━━━━━━━━━━━━━━━━━━━━━
+"""
+        for pat, stats in pattern_stats.items():
+            wr = (stats['wins'] / stats['total'] * 100) if stats['total'] > 0 else 0
+            msg += f"""
+• {pat}
+   الصفقات: {stats['total']} | نجاح: {wr:.0f}%
+   الربح: {stats['pnl']:+.2f}% ({stats['usd']:+.2f}$)
+"""
+        msg += f"\n🕐 `{datetime.now().strftime('%H:%M:%S')}`"
+        await self._send_msg(chat_id, msg.strip())
+
+    async def _reply_help(self, chat_id):
+        msg = f"""
+📋 *الأوامر المتاحة*
+{BOT_TAG}
+
+/status   – حالة البوت
+/open     – الصفقات المفتوحة
+/closed   – آخر الصفقات المغلقة
+/stats    – إحصائيات الأداء
+/download – تحميل ملفات CSV
+/help     – هذه القائمة
+"""
+        await self._send_msg(chat_id, msg)
+
+    async def _send_msg(self, chat_id, text):
+        try:
+            url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
+        except Exception as e:
+            print(f"⚠️ فشل إرسال الرسالة: {e}")
+
+# =========================================================
+# فلتر السوق
 # =========================================================
 class MarketRegimeFilter:
     def __init__(self): self.btc_symbol = 'BTC/USDT'; self.regime_data = {}
@@ -551,64 +714,21 @@ class MarketRegimeFilter:
         return ema
 
 # =========================================================
-# تيليجرام بولر (أوامر)
-# =========================================================
-class TelegramPoller:
-    def __init__(self, token, engine, notifier):
-        self.token = token; self.engine = engine; self.notifier = notifier
-        self.last_update_id = 0
-    async def start(self):
-        while True:
-            try:
-                url = f"https://api.telegram.org/bot{self.token}/getUpdates"
-                async with httpx.AsyncClient(timeout=10) as client:
-                    resp = await client.get(url, params={"offset": self.last_update_id+1, "timeout":5})
-                    data = resp.json()
-                    if data.get("ok"):
-                        for upd in data["result"]:
-                            self.last_update_id = upd["update_id"]
-                            msg = upd.get("message")
-                            if msg:
-                                text = msg.get("text","").strip()
-                                chat_id = msg["chat"]["id"]
-                                if text == "/status":
-                                    await self._reply_status(chat_id)
-                                elif text == "/download":
-                                    await self.notifier.send_csv_links(chat_id)
-            except: pass
-            await asyncio.sleep(3)
-    async def _reply_status(self, chat_id):
-        engine = self.engine
-        msg = f"""
-📊 *حالة البوت*
-{BOT_TAG}
-🔍 دورات المسح: {engine.scan_count}
-💵 الرصيد: {engine.trade_manager.available_capital:.2f}$
-📊 صفقات نشطة: {len(engine.trade_manager.active_trades)}
-📈 صفقات اليوم: {engine.trade_manager.daily_trades}
-🎯 نسبة النجاح: {engine.trade_manager.get_win_rate():.1f}%
-🕐 `{datetime.now().strftime('%H:%M:%S')}`
-"""
-        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-        async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"})
-
-# =========================================================
-# المحرك الرئيسي (مع إشعارات فتح وإغلاق)
+# المحرك الرئيسي (إشعارات مباشرة)
 # =========================================================
 class ExplosionScannerEngine:
     def __init__(self):
         self.notifier = EnhancedExplosionNotifier()
         self.detector = ExplosionDetector()
         self.market_filter = MarketRegimeFilter()
-        self.trade_manager = TradeManager(notifier=self.notifier)  # لتمرير notifier للإغلاق
+        self.trade_manager = TradeManager(notifier=self.notifier)
         self.scan_count = 0; self.total_signals = 0; self.market_regime = {}
         self.last_scan_stats = {'scanned':0,'signals':0,'duration':0,'time':'-'}
         self.last_daily_report = datetime.now(); self.last_heartbeat = datetime.now()
 
     async def run(self):
         global engine_instance; engine_instance = self
-        print("╔══════════════════════════════════════════════════════════╗\n║     💥 نظام الانفجارات v38.1 – إشعارات كاملة 💥      ║\n╚══════════════════════════════════════════════════════════╝")
+        print("╔══════════════════════════════════════════════════════════╗\n║     💥 نظام الانفجارات v40.0 – موثوق 💥      ║\n╚══════════════════════════════════════════════════════════╝")
         exchange = ccxt_async.gateio({'enableRateLimit': True, 'rateLimit': 150})
         await self.notifier.send_startup_message()
         try:
@@ -616,7 +736,6 @@ class ExplosionScannerEngine:
                 self.scan_count += 1; start_time = time.time()
                 self.market_regime = await self.market_filter.analyze(exchange)
 
-                # تحديث الصفقات النشطة
                 if self.trade_manager.active_trades:
                     ohlcv_tasks = {s: exchange.fetch_ohlcv(s, '5m', limit=26) for s in self.trade_manager.active_trades}
                     ohlcv_results = {}
@@ -633,7 +752,6 @@ class ExplosionScannerEngine:
                                 result = self.trade_manager.update_trade(symbol, price, arr)
                             else:
                                 result = self.trade_manager.update_trade(symbol, price)
-                            # note: الإشعار يتم إرساله تلقائياً من داخل _close_trade
                         except Exception as e:
                             print(f"  ⚠️ خطأ في تحديث {symbol}: {e}")
 
@@ -644,9 +762,10 @@ class ExplosionScannerEngine:
                         available_slots = MAX_CONCURRENT_TRADES - len(self.trade_manager.active_trades)
                         for signal in signals[:available_slots]:
                             if signal.priority >= 1:
-                                if self.trade_manager.open_trade(signal):
-                                    # إرسال إشعار فتح الصفقة
-                                    await self.notifier.send_open_trade_alert(signal, self.trade_manager.active_trades[signal.symbol].capital)
+                                success, capital = self.trade_manager.open_trade(signal)
+                                if success:
+                                    # إشعار دخول فوري
+                                    await self.notifier.send_open_trade_alert(signal, capital)
                                     self.total_signals += 1
                                     await asyncio.sleep(0.3)
                     else:
@@ -672,7 +791,7 @@ class ExplosionScannerEngine:
             await exchange.close()
 
 # =========================================================
-# تطبيق Flask (بدون تغيير)
+# تطبيق Flask
 # =========================================================
 app = Flask(__name__)
 engine_instance = None
@@ -684,9 +803,9 @@ def dashboard():
     stats = engine_instance.last_scan_stats
     tm = engine_instance.trade_manager
     return render_template_string('''
-    <!DOCTYPE html><html dir="rtl"><head><title>نظام اكتشاف الانفجارات v38.1</title><meta charset="utf-8"><meta http-equiv="refresh" content="30">
+    <!DOCTYPE html><html dir="rtl"><head><title>نظام اكتشاف الانفجارات v40.0</title><meta charset="utf-8"><meta http-equiv="refresh" content="30">
     <style>body{font-family:Arial;background:#1a1a2e;color:#eee;margin:20px}.card{background:#16213e;border-radius:10px;padding:20px;margin:10px}.badge{padding:5px 10px;border-radius:20px}.success{background:#0f9d58}.warning{background:#f4b400}.danger{background:#d93025}h1,h2{color:#fff}p{margin:10px 0}</style></head><body>
-    <h1>🚂 نظام اكتشاف الانفجارات v38.1 – إشعارات كاملة</h1>
+    <h1>🚂 نظام اكتشاف الانفجارات v40.0 – موثوق</h1>
     <div style="display:flex;flex-wrap:wrap">
     <div class="card" style="flex:1"><h2>📊 حالة السوق</h2><p>النظام: {{market.trend}}</p><p>ADX: {{market.adx}} | BTC 1h: {{market.btc_change}}%</p></div>
     <div class="card" style="flex:1"><h2>💰 حالة الحساب</h2><p>الرصيد المتاح: ${{"%.2f"|format(tm.available_capital)}}</p><p>الصفقات النشطة: {{tm.active_trades|length}}</p><p>صفقات اليوم: {{tm.daily_trades}}</p><p>نسبة النجاح: {{"%.1f"|format(tm.get_win_rate())}}%</p></div>

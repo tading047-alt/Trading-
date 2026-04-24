@@ -1,6 +1,7 @@
-ccxt==4.2.85
-pandas==2.1.4
-numpy==1.24.3
-aiofiles==23.2.1
-httpx==0.25.2
-Flask==3.0.0
+ccxt
+pandas
+numpy
+httpx
+aiofiles
+flask
+requests

@@ -839,4 +839,119 @@ async def main():
     await engine.run()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    async def run(self):
+    global engine_instance
+    engine_instance = self
+    print("╔══════════════════════════════════════════════════════════╗\n║     💥 نظام الانفجارات v40.0 – موثوق 💥      ║\n╚══════════════════════════════════════════════════════════╝")
+    
+    # إعادة محاولة الاتصال إذا فشل
+    while True:
+        try:
+            exchange = ccxt_async.gateio({'enableRateLimit': True, 'rateLimit': 150})
+            # اختبار الاتصال
+            await exchange.fetch_ticker('BTC/USDT')
+            print("✅ تم الاتصال بالبورصة بنجاح.")
+            break
+        except Exception as e:
+            print(f"❌ فشل الاتصال بالبورصة: {e}. إعادة المحاولة خلال 30 ثانية...")
+            await asyncio.sleep(30)
+
+    await self.notifier.send_startup_message()
+    
+    # حلقة رئيسية محمية
+    while True:
+        try:
+            self.scan_count += 1
+            start_time = time.time()
+            
+            # تحليل السوق (مع حماية)
+            try:
+                self.market_regime = await self.market_filter.analyze(exchange)
+            except Exception as e:
+                print(f"⚠️ خطأ في تحليل السوق: {e}")
+                self.market_regime = {'can_trade': True, 'trend': 'unknown', 'adx': 0, 'btc_change_1h': 0}
+
+            # تحديث الصفقات النشطة (مع حماية)
+            if self.trade_manager.active_trades:
+                ohlcv_tasks = {s: exchange.fetch_ohlcv(s, '5m', limit=26) for s in self.trade_manager.active_trades}
+                ohlcv_results = {}
+                for sym, task in ohlcv_tasks.items():
+                    try:
+                        ohlcv_results[sym] = await task
+                    except:
+                        ohlcv_results[sym] = None
+                for symbol in list(self.trade_manager.active_trades.keys()):
+                    try:
+                        ticker = await exchange.fetch_ticker(symbol)
+                        price = ticker['last']
+                        ohlcv_data = ohlcv_results.get(symbol)
+                        if ohlcv_data and len(ohlcv_data) >= 26:
+                            arr = np.array(ohlcv_data)
+                            self.trade_manager.update_trade(symbol, price, arr)
+                        else:
+                            self.trade_manager.update_trade(symbol, price)
+                    except Exception as e:
+                        print(f"  ⚠️ خطأ في تحديث {symbol}: {e}")
+
+            # مسح السوق (مع حماية)
+            signals = []
+            if self.market_regime.get('can_trade', True):
+                try:
+                    signals = await self.detector.scan_market(exchange)
+                except Exception as e:
+                    print(f"⚠️ خطأ في مسح السوق: {e}")
+
+                if signals:
+                    print(f"\n🎯 تم اكتشاف {len(signals)} إشارة!")
+                    available_slots = MAX_CONCURRENT_TRADES - len(self.trade_manager.active_trades)
+                    for signal in signals[:available_slots]:
+                        if signal.priority >= 1:
+                            success, capital = self.trade_manager.open_trade(signal)
+                            if success:
+                                await self.notifier.send_open_trade_alert(signal, capital)
+                                self.total_signals += 1
+                                await asyncio.sleep(0.3)
+                else:
+                    print("\n⚪ لا توجد إشارات")
+            else:
+                print("\n⚠️ التداول متوقف")
+
+            # تحديث الإحصائيات والتقارير
+            elapsed = time.time() - start_time
+            self.last_scan_stats = {
+                'scanned': SCAN_SYMBOLS_LIMIT,
+                'signals': len(signals),
+                'duration': round(elapsed, 2),
+                'time': datetime.now().strftime('%H:%M:%S')
+            }
+
+            if (datetime.now() - self.last_heartbeat).total_seconds() > 7200:
+                try:
+                    await self.notifier.send_heartbeat(self)
+                except:
+                    pass
+                self.last_heartbeat = datetime.now()
+
+            now = datetime.now()
+            if now.hour == 23 and now.minute >= 55:
+                if (now - self.last_daily_report).total_seconds() > 3600:
+                    try:
+                        await self.notifier.send_daily_report(self.trade_manager)
+                    except:
+                        pass
+                    self.last_daily_report = now
+
+            print(f"\n📊 دورة #{self.scan_count} | ⏱️ {elapsed:.1f} ثانية | الصفقات النشطة: {len(self.trade_manager.active_trades)}")
+            
+        except Exception as e:
+            # إذا حدث خطأ غير متوقع في الحلقة الرئيسية، نسجله ونستمر
+            print(f"❌ خطأ غير متوقع في الدورة #{self.scan_count}: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        # الانتظار حتى الدورة التالية (مع حماية من الإلغاء)
+        try:
+            await asyncio.sleep(SCAN_INTERVAL)
+        except asyncio.CancelledError:
+            print("⏹️ تم إلغاء المهمة.")
+            break

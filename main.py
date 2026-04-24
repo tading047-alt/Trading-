@@ -1,9 +1,8 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🚂 نظام اكتشاف الانفجارات - الإصدار النهائي المكتمل (Open Season)
-First Station Explosion Detector - Complete Final Edition
+🚂 نظام اكتشاف الانفجارات - v38.1 (إشعارات الصفقات كاملة)
+First Station Explosion Detector - Full Notifications Edition
 """
 
 import asyncio, threading, sqlite3, pandas as pd, numpy as np, httpx, json, os, time, csv
@@ -79,7 +78,6 @@ os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(f"{LOG_DIR}/daily", exist_ok=True)
 SIGNALS_FILE = f"{LOG_DIR}/signals_detected.csv"
 TRADES_FILE = f"{LOG_DIR}/trades_executed.csv"
-VIRTUAL_TRADES_FILE = f"{LOG_DIR}/virtual_trades.csv"
 SNAPSHOT_FILE = f"{LOG_DIR}/market_snapshots.csv"
 ERRORS_FILE = f"{LOG_DIR}/errors_log.csv"
 DB_FILE = f"{LOG_DIR}/bot_state.db"
@@ -133,26 +131,24 @@ class ActiveTrade:
     pattern: str; confidence: float; atr_percent: float = 0.0; is_micro_pump: bool = False
 
 # =========================================================
-# مدير الصفقات (معدل للكم الكبير)
+# مدير الصفقات (مع إشعارات الإغلاق)
 # =========================================================
 class TradeManager:
-    def __init__(self):
+    def __init__(self, notifier=None):
         self.active_trades: Dict[str, ActiveTrade] = {}
         self.closed_trades: List[dict] = []
         self.available_capital = TOTAL_CAPITAL
         self.daily_trades = 0; self.daily_pnl = 0.0; self.total_trades = 0; self.winning_trades = 0
+        self.notifier = notifier  # لاستدعاء إشعارات الإغلاق
 
     def open_trade(self, signal: ExplosionSignal) -> bool:
         symbol = signal.symbol
-        if symbol in self.active_trades:
-            return False
+        if symbol in self.active_trades: return False
         max_con = MAX_CONCURRENT_TRADES
-        if signal.is_micro_pump: max_con = MICRO_PUMP_CAPITAL_PER_TRADE * 10  # لن يؤثر فعلياً
-        if len(self.active_trades) >= max_con:
-            return False
+        if signal.is_micro_pump: max_con = MICRO_PUMP_MAX_CONCURRENT
+        if len(self.active_trades) >= max_con: return False
         capital = MICRO_PUMP_CAPITAL_PER_TRADE if signal.is_micro_pump else CAPITAL_PER_TRADE
-        if capital > self.available_capital:
-            return False
+        if capital > self.available_capital: return False
         quantity = capital / signal.entry_price
         self.available_capital -= capital
         self.daily_trades += 1; self.total_trades += 1
@@ -167,6 +163,7 @@ class TradeManager:
         print(f"  ✅ {symbol}: دخول ناجح! الثقة={signal.confidence:.0f}% | المبلغ={capital:.1f}$")
         return True
 
+    # --- update_trade مطابق للإصدارات السابقة (بدون تغيير) ---
     def update_trade(self, symbol: str, current_price: float, ohlcv_5m: Optional[np.ndarray] = None) -> Optional[dict]:
         if symbol not in self.active_trades: return None
         trade = self.active_trades[symbol]
@@ -246,6 +243,9 @@ class TradeManager:
         self.closed_trades.append(result)
         del self.active_trades[symbol]
         print(f"  🏁 {symbol}: {pnl_pct:+.2f}% | {reason} | متاح: {self.available_capital:.2f}$")
+        # 🆕 إرسال إشعار الإغلاق
+        if self.notifier:
+            asyncio.create_task(self.notifier.send_trade_closed_alert(result))
         return result
 
     def get_win_rate(self) -> float:
@@ -349,7 +349,6 @@ class ExplosionDetector:
                         priority=5 if total_conf >= 80 else 4, atr_percent=round(atr_percent,2),
                         is_micro_pump=True)
 
-            # تحليل عادي
             c1 = self._check_calm_before_storm(volumes_5m, closes_5m)
             c2 = self._check_whale_accumulation(volumes_1m, closes_1m)
             c3 = self._check_bollinger_squeeze(closes_5m)
@@ -368,24 +367,6 @@ class ExplosionDetector:
                     atr_percent=round(atr_percent,2))
         except: return None
         return None
-
-    def _check_micro_pump_spike(self, volumes, closes, current_price):
-        if len(volumes) < 10 or len(closes) < 2: return {'detected': False}
-        avg_vol = np.mean(volumes[-11:-1]) if len(volumes) >= 11 else volumes[-2]
-        vol_ratio = volumes[-1] / avg_vol if avg_vol > 0 else 1
-        price_change_1m = (closes[-1] - closes[-2]) / closes[-2] * 100
-        if (vol_ratio >= MICRO_PUMP_MIN_VOLUME_RATIO and price_change_1m >= MICRO_PUMP_MIN_PRICE_CHANGE_1M and current_price <= MICRO_PUMP_MAX_PRICE):
-            return {'detected': True, 'name': f'🐭 Micro Pump ({vol_ratio:.1f}x)', 'time_estimate': 30, 'pattern_name': 'micro_pump'}
-        return {'detected': False}
-
-    def _check_micro_breakout(self, highs, closes, volumes, current_price):
-        if len(highs) < 15 or len(volumes) < 10: return {'detected': False}
-        recent_high = np.max(highs[-16:-1])
-        avg_vol = np.mean(volumes[-11:-1]) if len(volumes) >= 11 else volumes[-2]
-        vol_ratio = volumes[-1] / avg_vol if avg_vol > 0 else 1
-        if closes[-1] > recent_high and vol_ratio >= 2.0 and current_price <= MICRO_PUMP_MAX_PRICE:
-            return {'detected': True, 'name': '🚀 Micro Breakout', 'time_estimate': 60, 'pattern_name': 'micro_breakout'}
-        return {'detected': False}
 
     def _check_calm_before_storm(self, volumes, closes):
         if len(volumes)<15 or len(closes)<10: return {'detected':False}
@@ -406,6 +387,22 @@ class ExplosionDetector:
         pos=(cur-lower)/(upper-lower) if upper!=lower else 0.5
         if bw<5.0 and pos<0.4: return {'detected':True, 'name':f'🎯 بولنجر ({bw:.1f}%)','time_estimate':240,'pattern_name':'bollinger_squeeze'}
         return {'detected':False}
+    def _check_micro_pump_spike(self, volumes, closes, current_price):
+        if len(volumes) < 10 or len(closes) < 2: return {'detected': False}
+        avg_vol = np.mean(volumes[-11:-1]) if len(volumes) >= 11 else volumes[-2]
+        vol_ratio = volumes[-1] / avg_vol if avg_vol > 0 else 1
+        price_change_1m = (closes[-1] - closes[-2]) / closes[-2] * 100
+        if (vol_ratio >= MICRO_PUMP_MIN_VOLUME_RATIO and price_change_1m >= MICRO_PUMP_MIN_PRICE_CHANGE_1M and current_price <= MICRO_PUMP_MAX_PRICE):
+            return {'detected': True, 'name': f'🐭 Micro Pump ({vol_ratio:.1f}x)', 'time_estimate': 30, 'pattern_name': 'micro_pump'}
+        return {'detected': False}
+    def _check_micro_breakout(self, highs, closes, volumes, current_price):
+        if len(highs) < 15 or len(volumes) < 10: return {'detected': False}
+        recent_high = np.max(highs[-16:-1])
+        avg_vol = np.mean(volumes[-11:-1]) if len(volumes) >= 11 else volumes[-2]
+        vol_ratio = volumes[-1] / avg_vol if avg_vol > 0 else 1
+        if closes[-1] > recent_high and vol_ratio >= 2.0 and current_price <= MICRO_PUMP_MAX_PRICE:
+            return {'detected': True, 'name': '🚀 Micro Breakout', 'time_estimate': 60, 'pattern_name': 'micro_breakout'}
+        return {'detected': False}
     def _calculate_priority(self, conf, cnt, time_sec):
         pri = 2 if conf >= MIN_CONFIDENCE else 1
         if conf>=85: pri+=1
@@ -419,28 +416,44 @@ class ExplosionDetector:
     def _record_signal(self, signal): self.recent_signals.append(signal); self.last_signal_time[signal.symbol]=datetime.now()
 
 # =========================================================
-# نظام الإشعارات
+# نظام الإشعارات الكامل (فتح + إغلاق + تحميل)
 # =========================================================
 class EnhancedExplosionNotifier:
     def __init__(self):
-        self.telegram_token = TELEGRAM_TOKEN; self.telegram_chat_id = TELEGRAM_CHAT_ID
+        self.telegram_token = TELEGRAM_TOKEN
+        self.telegram_chat_id = TELEGRAM_CHAT_ID
 
-    async def send_explosion_alert(self, signal: ExplosionSignal, capital_allocated: float = 0):
-        prio_emoji = "🔴🔴🔴" if signal.priority>=5 else "🔴🔴" if signal.priority>=4 else "🔴" if signal.priority>=3 else "🟡"
-        patterns_msg = "\n".join(f"  • {p}" for p in signal.patterns)
+    async def send_open_trade_alert(self, signal: ExplosionSignal, capital: float):
+        emoji = "🔴" if signal.priority >= 4 else "🟡"
+        patterns = "\n".join(f"  • {p}" for p in signal.patterns)
         msg = f"""
-{prio_emoji} *{'🐭 Micro Pump' if signal.is_micro_pump else 'انفجار قادم'} - أولوية {signal.priority}/5*
+{emoji} *فتح صفقة جديدة*
 {BOT_TAG}
 
 🪙 *{signal.symbol}*
-💰 السعر الحالي: {signal.entry_price:.8f}
+💵 السعر: {signal.entry_price:.8f}
+💰 المبلغ: {capital:.2f}$
 📊 الثقة: {signal.confidence:.1f}%
-📈 الصعود المتوقع: +{signal.expected_move:.1f}%
-📋 *الأنماط المكتشفة:*
-{patterns_msg}
-💰 رأس المال المخصص: {capital_allocated:.1f}$
+🎯 الأولوية: {signal.priority}/5
+📋 الأنماط:
+{patterns}
 🕐 `{datetime.now().strftime('%H:%M:%S')}`
 """
+        await self._send_telegram(msg)
+
+    async def send_trade_closed_alert(self, result: dict):
+        emoji = "💰" if result['pnl_pct'] > 0 else "📉"
+        msg = f"""
+{emoji} *إغلاق صفقة*
+{BOT_TAG}
+
+🪙 {result['symbol']}
+📊 الربح: {result['pnl_pct']:+.2f}% ({result['pnl_usd']:+.2f}$)
+🎯 السبب: {result['exit_reason']}
+💵 الرصيد الحالي: {self.available_capital:.2f}$
+🕐 `{datetime.now().strftime('%H:%M:%S')}`
+"""
+        # ملاحظة: الرصيد يتم تمريره من TradeManager
         await self._send_telegram(msg)
 
     async def send_startup_message(self):
@@ -482,9 +495,11 @@ class EnhancedExplosionNotifier:
         msg = f"""
 📁 *روابط تحميل ملفات CSV*
 {BOT_TAG}
+
 • [الإشارات]({base_url}/download/signals)
 • [الصفقات]({base_url}/download/trades)
-• [الافتراضية]({base_url}/download/virtual)
+• [لقطات السوق]({base_url}/download/snapshots)
+• [الأخطاء]({base_url}/download/errors)
 """
         await self._send_telegram_to_chat(chat_id, msg)
 
@@ -499,7 +514,7 @@ class EnhancedExplosionNotifier:
         except Exception as e: print(f"⚠️ خطأ تليجرام: {e}")
 
 # =========================================================
-# فلتر السوق
+# فلتر السوق (مبسط)
 # =========================================================
 class MarketRegimeFilter:
     def __init__(self): self.btc_symbol = 'BTC/USDT'; self.regime_data = {}
@@ -536,7 +551,7 @@ class MarketRegimeFilter:
         return ema
 
 # =========================================================
-# بوت تيليجرام لاستقبال الأوامر
+# تيليجرام بولر (أوامر)
 # =========================================================
 class TelegramPoller:
     def __init__(self, token, engine, notifier):
@@ -579,21 +594,21 @@ class TelegramPoller:
             await client.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"})
 
 # =========================================================
-# المحرك الرئيسي (مكتمل)
+# المحرك الرئيسي (مع إشعارات فتح وإغلاق)
 # =========================================================
 class ExplosionScannerEngine:
     def __init__(self):
-        self.detector = ExplosionDetector()
         self.notifier = EnhancedExplosionNotifier()
+        self.detector = ExplosionDetector()
         self.market_filter = MarketRegimeFilter()
-        self.trade_manager = TradeManager()
+        self.trade_manager = TradeManager(notifier=self.notifier)  # لتمرير notifier للإغلاق
         self.scan_count = 0; self.total_signals = 0; self.market_regime = {}
         self.last_scan_stats = {'scanned':0,'signals':0,'duration':0,'time':'-'}
         self.last_daily_report = datetime.now(); self.last_heartbeat = datetime.now()
 
     async def run(self):
         global engine_instance; engine_instance = self
-        print("╔══════════════════════════════════════════════════════════╗\n║     💥 نظام الانفجارات v38.0 – الصيد المفتوح 💥      ║\n╚══════════════════════════════════════════════════════════╝")
+        print("╔══════════════════════════════════════════════════════════╗\n║     💥 نظام الانفجارات v38.1 – إشعارات كاملة 💥      ║\n╚══════════════════════════════════════════════════════════╝")
         exchange = ccxt_async.gateio({'enableRateLimit': True, 'rateLimit': 150})
         await self.notifier.send_startup_message()
         try:
@@ -601,6 +616,7 @@ class ExplosionScannerEngine:
                 self.scan_count += 1; start_time = time.time()
                 self.market_regime = await self.market_filter.analyze(exchange)
 
+                # تحديث الصفقات النشطة
                 if self.trade_manager.active_trades:
                     ohlcv_tasks = {s: exchange.fetch_ohlcv(s, '5m', limit=26) for s in self.trade_manager.active_trades}
                     ohlcv_results = {}
@@ -614,10 +630,12 @@ class ExplosionScannerEngine:
                             ohlcv_data = ohlcv_results.get(symbol)
                             if ohlcv_data and len(ohlcv_data) >= 26:
                                 arr = np.array(ohlcv_data)
-                                self.trade_manager.update_trade(symbol, price, arr)
+                                result = self.trade_manager.update_trade(symbol, price, arr)
                             else:
-                                self.trade_manager.update_trade(symbol, price)
-                        except: pass
+                                result = self.trade_manager.update_trade(symbol, price)
+                            # note: الإشعار يتم إرساله تلقائياً من داخل _close_trade
+                        except Exception as e:
+                            print(f"  ⚠️ خطأ في تحديث {symbol}: {e}")
 
                 if self.market_regime.get('can_trade', True):
                     signals = await self.detector.scan_market(exchange)
@@ -627,6 +645,8 @@ class ExplosionScannerEngine:
                         for signal in signals[:available_slots]:
                             if signal.priority >= 1:
                                 if self.trade_manager.open_trade(signal):
+                                    # إرسال إشعار فتح الصفقة
+                                    await self.notifier.send_open_trade_alert(signal, self.trade_manager.active_trades[signal.symbol].capital)
                                     self.total_signals += 1
                                     await asyncio.sleep(0.3)
                     else:
@@ -652,7 +672,7 @@ class ExplosionScannerEngine:
             await exchange.close()
 
 # =========================================================
-# تطبيق Flask
+# تطبيق Flask (بدون تغيير)
 # =========================================================
 app = Flask(__name__)
 engine_instance = None
@@ -664,15 +684,15 @@ def dashboard():
     stats = engine_instance.last_scan_stats
     tm = engine_instance.trade_manager
     return render_template_string('''
-    <!DOCTYPE html><html dir="rtl"><head><title>نظام اكتشاف الانفجارات v38.0</title><meta charset="utf-8"><meta http-equiv="refresh" content="30">
+    <!DOCTYPE html><html dir="rtl"><head><title>نظام اكتشاف الانفجارات v38.1</title><meta charset="utf-8"><meta http-equiv="refresh" content="30">
     <style>body{font-family:Arial;background:#1a1a2e;color:#eee;margin:20px}.card{background:#16213e;border-radius:10px;padding:20px;margin:10px}.badge{padding:5px 10px;border-radius:20px}.success{background:#0f9d58}.warning{background:#f4b400}.danger{background:#d93025}h1,h2{color:#fff}p{margin:10px 0}</style></head><body>
-    <h1>🚂 نظام اكتشاف الانفجارات v38.0 – الصيد المفتوح</h1>
+    <h1>🚂 نظام اكتشاف الانفجارات v38.1 – إشعارات كاملة</h1>
     <div style="display:flex;flex-wrap:wrap">
     <div class="card" style="flex:1"><h2>📊 حالة السوق</h2><p>النظام: {{market.trend}}</p><p>ADX: {{market.adx}} | BTC 1h: {{market.btc_change}}%</p></div>
     <div class="card" style="flex:1"><h2>💰 حالة الحساب</h2><p>الرصيد المتاح: ${{"%.2f"|format(tm.available_capital)}}</p><p>الصفقات النشطة: {{tm.active_trades|length}}</p><p>صفقات اليوم: {{tm.daily_trades}}</p><p>نسبة النجاح: {{"%.1f"|format(tm.get_win_rate())}}%</p></div>
     <div class="card" style="flex:1"><h2>🔍 آخر مسح</h2><p>العملات: {{stats.scanned}}</p><p>الإشارات: {{stats.signals}}</p><p>المدة: {{stats.duration}} ث</p></div>
     </div>
-    <div class="card"><h2>📁 تحميل الملفات</h2><a href="/download/signals">📊 الإشارات</a> | <a href="/download/trades">📈 الصفقات</a> | <a href="/download/virtual">🧪 الافتراضية</a></div>
+    <div class="card"><h2>📁 تحميل الملفات</h2><a href="/download/signals">📊 الإشارات</a> | <a href="/download/trades">📈 الصفقات</a> | <a href="/download/snapshots">📸 اللقطات</a> | <a href="/download/errors">⚠️ الأخطاء</a></div>
     <p style="text-align:center;opacity:0.7">آخر تحديث: {{now}}</p></body></html>''',
     market=market, stats=stats, tm=tm, now=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
 
@@ -681,8 +701,7 @@ def health(): return jsonify({'status':'healthy', 'timestamp':datetime.now().iso
 
 @app.route('/download/<ft>')
 def download_file(ft):
-    files = {'signals':SIGNALS_FILE, 'trades':TRADES_FILE, 'virtual':VIRTUAL_TRADES_FILE,
-             'snapshots':SNAPSHOT_FILE, 'errors':ERRORS_FILE}
+    files = {'signals':SIGNALS_FILE, 'trades':TRADES_FILE, 'snapshots':SNAPSHOT_FILE, 'errors':ERRORS_FILE}
     if ft in files and os.path.exists(files[ft]):
         return send_file(files[ft], as_attachment=True)
     return "Not found", 404

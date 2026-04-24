@@ -1,21 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🚂 نظام اكتشاف الانفجارات - الإصدار النهائي v40.0 (مستقر وموثوق)
-First Station Explosion Detector - Final Stable Edition v40.0
-
-الميزات الكاملة:
-✅ وضع الصيد المفتوح لجمع أقصى عدد من الصفقات للتحليل
-✅ إشعارات تليجرام فورية (فتح وإغلاق الصفقات)
-✅ أوامر تليجرام تفاعلية (/open, /closed, /stats, /download, /status, /help)
-✅ تسجيل الصفقات في قاعدة بيانات SQLite
-✅ معالجة أخطاء قوية تمنع التوقف المفاجئ
-✅ إعادة محاولة الاتصال بالبورصة عند الفشل
-✅ فلترة Micro Pump للعملات الصغيرة
-✅ خروج مبكر ذكي (شمعة هبوط، تقاطع EMA، كسر دعم)
-✅ وقف متحرك ذكي
-✅ لوحة تحكم ويب Flask
-✅ نبضات قلب كل ساعتين + تقرير يومي
+🚂 نظام اكتشاف الانفجارات - V40.1 (أوامر وإشعارات ثابتة)
+First Station Explosion Detector - Stable Commands Edition
 """
 
 import asyncio, threading, sqlite3, pandas as pd, numpy as np, httpx, json, os, time, csv
@@ -261,7 +248,6 @@ class TradeManager:
                   'confidence': trade.confidence, 'exit_reason': reason,
                   'take_profits_hit': trade.take_profits_hit, 'capital_allocated': trade.capital}
         self.closed_trades.append(result)
-        # تسجيل في قاعدة البيانات
         try:
             insert_trade_archive(symbol, trade.entry_price, price, pnl_pct, pnl_usd,
                                 trade.entry_time.isoformat(), datetime.now().isoformat(),
@@ -394,34 +380,41 @@ class ExplosionDetector:
         except: return None
         return None
 
-    # --- دوال الأنماط (مطابقة للإصدارات السابقة) ---
-    def _check_calm_before_storm(self, v, c):
-        if len(v)<15 or len(c)<10: return {'d':False}; r=np.mean(v[-5:])/np.mean(v[-15:-5]) if np.mean(v[-15:-5])>0 else 1
-        pr=(np.max(c[-8:])-np.min(c[-8:]))/np.mean(c[-8:])*100
-        if r<0.5 and pr<2.0: return {'detected':True,'name':'🌊 هدوء','te':300,'pn':'calm_before_storm'}
+    def _check_calm_before_storm(self, volumes, closes):
+        if len(volumes)<15 or len(closes)<10: return {'detected':False}
+        r = np.mean(volumes[-5:])/np.mean(volumes[-15:-5]) if np.mean(volumes[-15:-5])>0 else 1
+        pr = (np.max(closes[-8:])-np.min(closes[-8:]))/np.mean(closes[-8:])*100
+        if r<0.5 and pr<2.0: return {'detected':True, 'name':'🌊 هدوء','time_estimate':300,'pattern_name':'calm_before_storm'}
         return {'detected':False}
-    def _check_whale_accumulation(self, v, c):
-        if len(v)<10 or len(c)<5: return {'d':False}; r=v[-1]/np.mean(v[-10:]) if np.mean(v[-10:])>0 else 1
-        st=(np.max(c[-5:])-np.min(c[-5:]))/np.mean(c[-5:])*100
-        if r>1.5 and st<1.5: return {'detected':True,'name':f'🐋 حيتان ({r:.1f}x)','te':180,'pn':'whale_accumulation'}
+    def _check_whale_accumulation(self, volumes, closes):
+        if len(volumes)<10 or len(closes)<5: return {'detected':False}
+        r = volumes[-1]/np.mean(volumes[-10:]) if np.mean(volumes[-10:])>0 else 1
+        st = (np.max(closes[-5:])-np.min(closes[-5:]))/np.mean(closes[-5:])*100
+        if r>1.5 and st<1.5: return {'detected':True, 'name':f'🐋 حيتان ({r:.1f}x)','time_estimate':180,'pattern_name':'whale_accumulation'}
         return {'detected':False}
-    def _check_bollinger_squeeze(self, c):
-        if len(c)<20: return {'d':False}; rec=c[-20:]; cur=c[-1]; mid=np.mean(rec); std=np.std(rec)
-        u=mid+2*std; l=mid-2*std; bw=(u-l)/mid*100; pos=(cur-l)/(u-l) if u!=l else 0.5
-        if bw<5.0 and pos<0.4: return {'detected':True,'name':f'🎯 بولنجر ({bw:.1f}%)','te':240,'pn':'bollinger_squeeze'}
+    def _check_bollinger_squeeze(self, closes):
+        if len(closes)<20: return {'detected':False}
+        recent=closes[-20:]; cur=closes[-1]; mid=np.mean(recent); std=np.std(recent)
+        upper=mid+2*std; lower=mid-2*std; bw=(upper-lower)/mid*100
+        pos=(cur-lower)/(upper-lower) if upper!=lower else 0.5
+        if bw<5.0 and pos<0.4: return {'detected':True, 'name':f'🎯 بولنجر ({bw:.1f}%)','time_estimate':240,'pattern_name':'bollinger_squeeze'}
         return {'detected':False}
-    def _check_micro_pump_spike(self, v, c, pr):
-        if len(v)<10 or len(c)<2: return {'d':False}; avg=np.mean(v[-11:-1]) if len(v)>=11 else v[-2]
-        vr=v[-1]/avg if avg>0 else 1; pc=(c[-1]-c[-2])/c[-2]*100
-        if vr>=MICRO_PUMP_MIN_VOLUME_RATIO and pc>=MICRO_PUMP_MIN_PRICE_CHANGE_1M and pr<=MICRO_PUMP_MAX_PRICE:
-            return {'detected':True,'name':f'🐭 Micro Pump ({vr:.1f}x)','te':30,'pn':'micro_pump'}
-        return {'detected':False}
-    def _check_micro_breakout(self, h, c, v, pr):
-        if len(h)<15 or len(v)<10: return {'d':False}; rh=np.max(h[-16:-1]); avg=np.mean(v[-11:-1]) if len(v)>=11 else v[-2]
-        vr=v[-1]/avg if avg>0 else 1
-        if c[-1]>rh and vr>=2.0 and pr<=MICRO_PUMP_MAX_PRICE:
-            return {'detected':True,'name':'🚀 Micro Breakout','te':60,'pn':'micro_breakout'}
-        return {'detected':False}
+    def _check_micro_pump_spike(self, volumes, closes, current_price):
+        if len(volumes) < 10 or len(closes) < 2: return {'detected': False}
+        avg_vol = np.mean(volumes[-11:-1]) if len(volumes) >= 11 else volumes[-2]
+        vol_ratio = volumes[-1] / avg_vol if avg_vol > 0 else 1
+        price_change_1m = (closes[-1] - closes[-2]) / closes[-2] * 100
+        if (vol_ratio >= MICRO_PUMP_MIN_VOLUME_RATIO and price_change_1m >= MICRO_PUMP_MIN_PRICE_CHANGE_1M and current_price <= MICRO_PUMP_MAX_PRICE):
+            return {'detected': True, 'name': f'🐭 Micro Pump ({vol_ratio:.1f}x)', 'time_estimate': 30, 'pattern_name': 'micro_pump'}
+        return {'detected': False}
+    def _check_micro_breakout(self, highs, closes, volumes, current_price):
+        if len(highs) < 15 or len(volumes) < 10: return {'detected': False}
+        recent_high = np.max(highs[-16:-1])
+        avg_vol = np.mean(volumes[-11:-1]) if len(volumes) >= 11 else volumes[-2]
+        vol_ratio = volumes[-1] / avg_vol if avg_vol > 0 else 1
+        if closes[-1] > recent_high and vol_ratio >= 2.0 and current_price <= MICRO_PUMP_MAX_PRICE:
+            return {'detected': True, 'name': '🚀 Micro Breakout', 'time_estimate': 60, 'pattern_name': 'micro_breakout'}
+        return {'detected': False}
     def _calculate_expected_move(self, conf, cnt):
         base=5.0
         if cnt>=4: base+=5.0
@@ -449,16 +442,15 @@ class EnhancedExplosionNotifier:
     def __init__(self):
         self.telegram_token = TELEGRAM_TOKEN; self.telegram_chat_id = TELEGRAM_CHAT_ID
     async def send_open_trade_alert(self, signal, capital):
-        emoji="🔴" if signal.priority>=4 else "🟡"
         pat="\n".join(f"  • {p}" for p in signal.patterns)
-        msg=f"""{emoji} *فتح صفقة جديدة*\n{BOT_TAG}\n\n🪙 *{signal.symbol}*\n💵 السعر: {signal.entry_price:.8f}\n💰 المبلغ: {capital:.2f}$\n📊 الثقة: {signal.confidence:.1f}%\n🎯 الأولوية: {signal.priority}/5\n📋 الأنماط:\n{pat}\n🕐 `{datetime.now().strftime('%H:%M:%S')}`"""
+        msg=f"""🔴 *فتح صفقة جديدة*\n{BOT_TAG}\n\n🪙 *{signal.symbol}*\n💵 السعر: {signal.entry_price:.8f}\n💰 المبلغ: {capital:.2f}$\n📊 الثقة: {signal.confidence:.1f}%\n🎯 الأولوية: {signal.priority}/5\n📋 الأنماط:\n{pat}\n🕐 `{datetime.now().strftime('%H:%M:%S')}`"""
         await self._send_telegram(msg)
     async def send_trade_closed_alert(self, result, available):
         emoji="💰" if result['pnl_pct']>0 else "📉"
         msg=f"""{emoji} *إغلاق صفقة*\n{BOT_TAG}\n\n🪙 {result['symbol']}\n📊 الربح: {result['pnl_pct']:+.2f}% ({result['pnl_usd']:+.2f}$)\n🎯 السبب: {result['exit_reason']}\n💵 الرصيد الحالي: {available:.2f}$\n🕐 `{datetime.now().strftime('%H:%M:%S')}`"""
         await self._send_telegram(msg)
     async def send_startup_message(self):
-        msg=f"""🚀 *تم تشغيل نظام الانفجارات v40.0*\n{BOT_TAG}\n✅ *النظام يعمل بنجاح!*\n🕐 `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`"""
+        msg=f"""🚀 *تم تشغيل نظام الانفجارات V40.1*\n{BOT_TAG}\n✅ *النظام يعمل بنجاح!*\n🕐 `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`"""
         await self._send_telegram(msg)
     async def send_daily_report(self, tm):
         wr=tm.get_win_rate(); net=tm.available_capital-TOTAL_CAPITAL
@@ -482,35 +474,81 @@ class EnhancedExplosionNotifier:
         except Exception as e: print(f"⚠️ خطأ تليجرام: {e}")
 
 # =========================================================
-# مستمع أوامر تليجرام (معالجة قوية)
+# مستمع أوامر تليجرام (معالج محسن جداً)
 # =========================================================
 class TelegramPoller:
     def __init__(self, token, engine, notifier):
-        self.token=token; self.engine=engine; self.notifier=notifier; self.last_update_id=0
+        self.token = token
+        self.engine = engine
+        self.notifier = notifier
+        self.last_update_id = 0
+
     async def start(self):
-        print("🤖 بدء استقبال أوامر تليجرام...")
+        print("🤖 بدء استقبال أوامر تليجرام (الإصدار المحسن)...")
+        # إعادة تعيين معرف التحديث لتجنب تجاهل الرسائل القديمة
+        try:
+            url = f"https://api.telegram.org/bot{self.token}/getUpdates"
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(url, params={"offset": -1, "timeout": 2})
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("ok") and data["result"]:
+                        self.last_update_id = data["result"][-1]["update_id"] + 1
+                        print(f"  🧹 تم تنظيف {len(data['result'])} تحديث قديم.")
+        except Exception:
+            pass
+
         while True:
             try:
-                url=f"https://api.telegram.org/bot{self.token}/getUpdates"
-                params={"offset":self.last_update_id+1,"timeout":10}
+                url = f"https://api.telegram.org/bot{self.token}/getUpdates"
+                params = {"offset": self.last_update_id + 1, "timeout": 10}
                 async with httpx.AsyncClient(timeout=15) as client:
-                    resp=await client.get(url,params=params); data=resp.json()
-                if data.get("ok"):
-                    for upd in data["result"]:
-                        self.last_update_id=upd["update_id"]
-                        message=upd.get("message")
-                        if message and "text" in message:
-                            text=message["text"].strip(); chat_id=message["chat"]["id"]
-                            print(f"  📩 أمر: {text}")
-                            if text=="/status": await self._reply_status(chat_id)
-                            elif text=="/download": await self.notifier.send_csv_links(chat_id)
-                            elif text=="/open": await self._reply_open(chat_id)
-                            elif text=="/closed": await self._reply_closed(chat_id)
-                            elif text=="/stats": await self._reply_stats(chat_id)
-                            elif text=="/help": await self._reply_help(chat_id)
-                            else: await self._send_msg(chat_id, "❌ أمر غير معروف. استخدم /help")
-            except Exception as e: print(f"⚠️ خطأ في poller: {e}")
-            await asyncio.sleep(2)
+                    resp = await client.get(url, params=params)
+                    if resp.status_code != 200:
+                        # طباعة الخطأ لتحليله
+                        print(f"  ⚠️ getUpdates فشل: {resp.status_code} - {resp.text[:100]}")
+                        await asyncio.sleep(5)
+                        continue
+
+                data = resp.json()
+                if not data.get("ok"):
+                    print(f"  ⚠️ تليجرام ليس OK: {data}")
+                    await asyncio.sleep(5)
+                    continue
+
+                for upd in data.get("result", []):
+                    self.last_update_id = upd["update_id"]
+                    message = upd.get("message")
+                    if not message or "text" not in message:
+                        continue
+
+                    text = message["text"].strip()
+                    chat_id = message["chat"]["id"]
+                    print(f"  📩 أمر وارد: '{text}' من {chat_id}")
+
+                    if text == "/status":
+                        await self._reply_status(chat_id)
+                    elif text == "/download":
+                        await self.notifier.send_csv_links(chat_id)
+                    elif text == "/open":
+                        await self._reply_open(chat_id)
+                    elif text == "/closed":
+                        await self._reply_closed(chat_id)
+                    elif text == "/stats":
+                        await self._reply_stats(chat_id)
+                    elif text == "/help":
+                        await self._reply_help(chat_id)
+                    else:
+                        await self._send_msg(chat_id, "❌ أمر غير معروف. استخدم /help")
+                        
+            except asyncio.CancelledError:
+                print("⏹️ توقف TelegramPoller.")
+                break
+            except Exception as e:
+                print(f"⚠️ خطأ في poller: {e}")
+                import traceback
+                traceback.print_exc()
+            await asyncio.sleep(1)
 
     async def _reply_status(self, chat_id):
         e=self.engine
@@ -561,7 +599,7 @@ class TelegramPoller:
         except Exception as e: print(f"⚠️ فشل إرسال: {e}")
 
 # =========================================================
-# فلتر السوق (مبسط)
+# فلتر السوق
 # =========================================================
 class MarketRegimeFilter:
     def __init__(self): self.btc_symbol='BTC/USDT'; self.regime_data={}
@@ -608,9 +646,8 @@ class ExplosionScannerEngine:
 
     async def run(self):
         global engine_instance; engine_instance = self
-        print("╔══════════════════════════════════════════════════════════╗\n║     💥 نظام الانفجارات v40.0 – مستقر 💥      ║\n╚══════════════════════════════════════════════════════════╝")
+        print("╔══════════════════════════════════════════════════════════╗\n║     💥 نظام الانفجارات V40.1 – أوامر وإشعارات ثابتة 💥      ║\n╚══════════════════════════════════════════════════════════╝")
         
-        # إعادة محاولة الاتصال بالبورصة
         while True:
             try:
                 exchange = ccxt_async.gateio({'enableRateLimit': True, 'rateLimit': 150})
@@ -628,11 +665,9 @@ class ExplosionScannerEngine:
                 self.scan_count += 1
                 start_time = time.time()
                 
-                # تحليل السوق
                 try: self.market_regime = await self.market_filter.analyze(exchange)
                 except: self.market_regime = {'can_trade':True}
 
-                # تحديث الصفقات النشطة
                 if self.trade_manager.active_trades:
                     ohlcv_tasks = {s: exchange.fetch_ohlcv(s, '5m', limit=26) for s in self.trade_manager.active_trades}
                     ohlcv_results = {}
@@ -649,7 +684,6 @@ class ExplosionScannerEngine:
                                 self.trade_manager.update_trade(symbol, price)
                         except: pass
 
-                # مسح السوق
                 signals = []
                 if self.market_regime.get('can_trade', True):
                     try: signals = await self.detector.scan_market(exchange)
@@ -691,7 +725,7 @@ class ExplosionScannerEngine:
             except asyncio.CancelledError: break
 
 # =========================================================
-# تطبيق Flask (مبسط)
+# تطبيق Flask
 # =========================================================
 app = Flask(__name__)
 engine_instance = None
@@ -701,9 +735,9 @@ def dashboard():
     if not engine_instance: return "Engine not started yet."
     m = engine_instance.market_regime; s = engine_instance.last_scan_stats; tm = engine_instance.trade_manager
     return render_template_string('''
-    <!DOCTYPE html><html dir="rtl"><head><title>نظام الانفجارات v40.0</title><meta charset="utf-8"><meta http-equiv="refresh" content="30">
+    <!DOCTYPE html><html dir="rtl"><head><title>نظام الانفجارات V40.1</title><meta charset="utf-8"><meta http-equiv="refresh" content="30">
     <style>body{font-family:Arial;background:#1a1a2e;color:#eee;margin:20px}.card{background:#16213e;border-radius:10px;padding:20px;margin:10px}.badge{padding:5px 10px;border-radius:20px}.success{background:#0f9d58}h1,h2{color:#fff}p{margin:10px 0}</style></head><body>
-    <h1>🚂 نظام الانفجارات v40.0 – مستقر</h1>
+    <h1>🚂 نظام الانفجارات V40.1 – أوامر وإشعارات ثابتة</h1>
     <div style="display:flex;flex-wrap:wrap">
     <div class="card" style="flex:1"><h2>📊 السوق</h2><p>النظام: {{m.trend}}</p><p>ADX: {{m.adx}} | BTC 1h: {{m.btc_change}}%</p></div>
     <div class="card" style="flex:1"><h2>💰 الحساب</h2><p>الرصيد: ${{"%.2f"|format(tm.available_capital)}}</p><p>نشطة: {{tm.active_trades|length}}</p><p>اليوم: {{tm.daily_trades}}</p><p>نجاح: {{"%.1f"|format(tm.get_win_rate())}}%</p></div>

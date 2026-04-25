@@ -8,7 +8,7 @@ from datetime import datetime
 
 # --- الإعدادات الشخصية ---
 TELEGRAM_TOKEN = '8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo'
-CHAT_ID = 'YOUR_CHAT_ID'
+CHAT_ID = '5067771509'
 INITIAL_BALANCE = 100.0
 CSV_FILE = 'opportunity_study.csv'
 

@@ -6,158 +6,176 @@ from datetime import datetime, timedelta
 import ccxt.async_support as ccxt_async
 
 # =========================================================
-# ⚙️ الإعدادات المخصصة (ضع بيانات التليجرام هنا)
+# ⚙️ الإعدادات المتقدمة
 # =========================================================
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "5067771509")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
 
 SETTINGS = {
     'INITIAL_CAPITAL': 1000.0,
     'MAX_CONCURRENT_TRADES': 10,
-    'TAKE_PROFIT_START': 2.0,      # يبدأ التتبع من ربح 2%
-    'TRAILING_DISTANCE': 1.0,      # المسافة من القمة 1%
-    'STOP_LOSS': -2.0,             # وقف الخسارة ثابت -2%
-    'FEE_RATE': 0.001,             # رسوم 0.1%
+    'TAKE_PROFIT_START': 2.0,      # التتبع يبدأ من 2%
+    'TRAILING_DISTANCE': 1.0,      # فرق اللاحق 1%
+    'STOP_LOSS': -2.0,             # وقف خسارة صارم
+    'FEE_RATE': 0.001,             # رسوم المنصة
     'BACKTEST_DAYS': 30,
-    'MIN_CONFIDENCE': 65
+    'MIN_SCORE_REQUIRED': 75       # الحد الأدنى للسكور لدخول الصفقة
 }
 
 # =========================================================
-# 📨 دالة تليجرام
+# 🧠 محرك السكور وتحليل الفريمات (MTF Engine)
 # =========================================================
-async def send_telegram(text: str):
-    if not TELEGRAM_TOKEN or "YOUR" in TELEGRAM_TOKEN: return
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        async with httpx.AsyncClient(timeout=15) as c:
-            await c.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text.strip(), "parse_mode": "Markdown"})
-    except: pass
+class StrategyEngine:
+    def __init__(self):
+        self.weights = {
+            'trend_1h': 30,        # توافق الاتجاه مع الساعة
+            'rsi_div_15m': 20,     # دايفرجنس على الـ 15 دقيقة
+            'vol_flow_15m': 20,    # تدفق السيولة
+            'squeeze_5m': 15,      # انفجار البولنجر على الـ 5 دقائق
+            'retest_5m': 15        # تأكيد إعادة الاختبار
+        }
+
+    def calculate_rsi(self, series, period=14):
+        delta = series.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
+
+    def analyze_mtf(self, data_1h, data_15m, data_5m):
+        score = 0
+        
+        # 1. تحليل فريم الساعة (الاتجاه العام - EMA 200)
+        c_1h = pd.Series([x[4] for x in data_1h])
+        ema_200 = c_1h.ewm(span=200).mean().iloc[-1]
+        if c_1h.iloc[-1] > ema_200:
+            score += self.weights['trend_1h']
+
+        # 2. تحليل فريم 15 دقيقة (الدايفرجنس والسيولة)
+        c_15m = pd.Series([x[4] for x in data_15m])
+        v_15m = pd.Series([x[5] for x in data_15m])
+        rsi_15m = self.calculate_rsi(c_15m)
+        
+        # دايفرجنس بسيط: السعر يهبط والـ RSI يصعد
+        if c_15m.iloc[-1] < c_15m.iloc[-5] and rsi_15m.iloc[-1] > rsi_15m.iloc[-5]:
+            score += self.weights['rsi_div_15m']
+        
+        if v_15m.iloc[-1] > v_15m.rolling(20).mean().iloc[-1] * 1.5:
+            score += self.weights['vol_flow_15m']
+
+        # 3. تحليل فريم 5 دقائق (نقطة الدخول وإعادة الاختبار)
+        c_5m = pd.Series([x[4] for x in data_5m])
+        h_5m = pd.Series([x[2] for x in data_5m])
+        
+        # حساب الاختراق وإعادة الاختبار
+        recent_high = h_5m.iloc[-20:-5].max()
+        breakout = h_5m.iloc[-5:].max() > recent_high
+        retest = c_5m.iloc[-1] <= recent_high * 1.005 and c_5m.iloc[-1] >= recent_high * 0.998
+        
+        if breakout and retest:
+            score += self.weights['retest_5m']
+            
+        return score, (breakout and retest)
 
 # =========================================================
-# 🧠 المحاكي المتطور (Simulator)
+# 💰 المحاكي (Simulator)
 # =========================================================
 class Simulator:
     def __init__(self):
         self.capital = SETTINGS['INITIAL_CAPITAL']
         self.active_trades = []
-        self.trades_history = []
-        self.peak_balance = SETTINGS['INITIAL_CAPITAL']
-        self.max_drawdown = 0.0
+        self.history = []
+        self.peak = SETTINGS['INITIAL_CAPITAL']
+        self.max_dd = 0.0
 
-    def open_trade(self, price, symbol, timestamp):
+    def open(self, price, symbol, timestamp):
         if len(self.active_trades) >= SETTINGS['MAX_CONCURRENT_TRADES']: return
         
-        # حساب حجم الصفقة (الرصيد الحالي / 10) - دعم الربح المركب
-        current_total_value = self.capital + sum(t['size'] for t in self.active_trades)
-        slot_size = current_total_value / SETTINGS['MAX_CONCURRENT_TRADES']
-        
+        # إدارة رأس المال المركب
+        total_val = self.capital + sum(t['size'] for t in self.active_trades)
+        slot_size = total_val / SETTINGS['MAX_CONCURRENT_TRADES']
         size = min(self.capital, slot_size)
-        if size < 10: return
         
+        if size < 10: return
         fee = size * SETTINGS['FEE_RATE']
         self.capital -= (size + fee)
-        
-        self.active_trades.append({
-            'symbol': symbol, 'entry': price, 'size': size,
-            'high': price, 'entry_time': timestamp
-        })
+        self.active_trades.append({'symbol': symbol, 'entry': price, 'size': size, 'high': price, 'time': timestamp})
 
     def update(self, price, symbol, timestamp):
         for t in self.active_trades[:]:
             if t['symbol'] == symbol:
                 if price > t['high']: t['high'] = price
-                pnl_pct = (price - t['entry']) / t['entry'] * 100
+                pnl = (price - t['entry']) / t['entry'] * 100
+                
+                # حساب Drawdown
+                curr_total = self.capital + sum(tr['size'] for tr in self.active_trades)
+                if curr_total > self.peak: self.peak = curr_total
+                dd = (self.peak - curr_total) / self.peak * 100
+                if dd > self.max_dd: self.max_dd = dd
 
-                # تحديث أقصى نزول (Drawdown)
-                current_total = self.capital + sum(tr['size'] for tr in self.active_trades)
-                if current_total > self.peak_balance: self.peak_balance = current_total
-                dd = (self.peak_balance - current_total) / self.peak_balance * 100
-                if dd > self.max_drawdown: self.max_drawdown = dd
+                # خروج
+                if pnl <= SETTINGS['STOP_LOSS']:
+                    self._close(t, price, "🚫 SL", timestamp)
+                elif pnl >= SETTINGS['TAKE_PROFIT_START']:
+                    t_stop = t['high'] * (1 - SETTINGS['TRAILING_DISTANCE']/100)
+                    if price <= t_stop:
+                        self._close(t, price, "🔄 Trailing", timestamp)
 
-                # شروط الخروج
-                if pnl_pct <= SETTINGS['STOP_LOSS']:
-                    self._close(t, price, "🚫 وقف خسارة", timestamp)
-                elif pnl_pct >= SETTINGS['TAKE_PROFIT_START']:
-                    trailing_stop = t['high'] * (1 - SETTINGS['TRAILING_DISTANCE']/100)
-                    if price <= trailing_stop:
-                        self._close(t, price, "🔄 جني أرباح متحرك", timestamp)
-
-    def _close(self, trade, price, reason, timestamp):
-        pnl_raw = (price - trade['entry']) / trade['entry']
-        exit_val = trade['size'] * (1 + pnl_raw)
-        fee = exit_val * SETTINGS['FEE_RATE']
-        final_amt = exit_val - fee
-        self.capital += final_amt
-        
-        self.trades_history.append({
-            'symbol': trade['symbol'], 'entry': trade['entry'], 'exit': price,
-            'pnl': ((final_amt - trade['size']) / trade['size']) * 100,
-            'reason': reason, 'entry_time': trade['entry_time'], 'exit_time': timestamp,
-            'duration': (timestamp - trade['entry_time']).total_seconds() / 60
+    def _close(self, t, price, reason, ts):
+        pnl_raw = (price - t['entry']) / t['entry']
+        val = t['size'] * (1 + pnl_raw)
+        self.capital += (val - (val * SETTINGS['FEE_RATE']))
+        self.history.append({
+            'symbol': t['symbol'], 'pnl': ((val - t['size']) / t['size']) * 100,
+            'entry': t['entry'], 'exit': price, 'time': t['time'], 'reason': reason
         })
-        self.active_trades.remove(trade)
+        self.active_trades.remove(t)
 
 # =========================================================
-# 🚀 الدالة الرئيسية
+# 🚀 تشغيل البوت
 # =========================================================
 async def main():
-    print("⏳ بدء الاختبار العكسي المكثف...")
     exchange = ccxt_async.binance({'enableRateLimit': True})
+    engine = StrategyEngine()
     sim = Simulator()
-    
-    # فلتر البيتكوين البسيط
-    btc_data = await exchange.fetch_ohlcv('BTC/USDT', '1h', limit=20)
-    btc_trend = btc_data[-1][4] > np.mean([x[4] for x in btc_data])
 
-    # جلب أفضل 50 عملة سيولة لتسريع الاختبار
+    # جلب العملات القوية فقط
     tickers = await exchange.fetch_tickers()
-    symbols = [s for s, t in tickers.items() if s.endswith('/USDT') and (t.get('quoteVolume') or 0) > 200000][:50]
+    symbols = [s for s, t in tickers.items() if s.endswith('/USDT') and (t.get('quoteVolume', 0) > 500000)][:30]
 
-    start_date = datetime.now() - timedelta(days=SETTINGS['BACKTEST_DAYS'])
-    since = exchange.parse8601(start_date.strftime('%Y-%m-%dT00:00:00Z'))
+    print(f"📊 جاري تحليل {len(symbols)} عملة عبر 3 فريمات زمنية...")
 
     for sym in symbols:
         try:
-            ohlcv = await exchange.fetch_ohlcv(sym, '5m', since=since, limit=2000)
-            data = np.array(ohlcv)
-            for i in range(20, len(data)):
-                price, ts = data[i][4], datetime.fromtimestamp(data[i][0]/1000)
+            # جلب بيانات MTF
+            d1h = await exchange.fetch_ohlcv(sym, '1h', limit=200)
+            d15m = await exchange.fetch_ohlcv(sym, '15m', limit=100)
+            d5m = await exchange.fetch_ohlcv(sym, '5m', limit=100)
+            
+            # محاكاة زمنية بسيطة (آخر 50 شمعة من فريم 5 دقائق)
+            for i in range(50, len(d5m)):
+                price = d5m[i][4]
+                ts = datetime.fromtimestamp(d5m[i][0]/1000)
                 sim.update(price, sym, ts)
                 
-                # استراتيجية الدخول (تراكم سيولة + زخم)
-                vol_spike = data[i][5] > np.mean(data[i-20:i, 5]) * 1.5
-                if not any(t['symbol'] == sym for t in sim.active_trades) and btc_trend and vol_spike:
-                    sim.open_trade(price, sym, ts)
+                # حساب السكور وتأكيد نقطة الدخول
+                score, is_retest = engine.analyze_mtf(d1h, d15m, d5m[i-50:i+1])
+                
+                if score >= SETTINGS['MIN_SCORE_REQUIRED'] and is_retest:
+                    if not any(t['symbol'] == sym for t in sim.active_trades):
+                        sim.open(price, sym, ts)
         except: continue
 
-    # --- معالجة التقارير ---
-    h = sim.trades_history
-    if not h: return print("❌ لا توجد صفقات منفذة.")
+    # إرسال التقارير
+    h = sorted(sim.history, key=lambda x: x['pnl'], reverse=True)
+    if h:
+        report = f"✅ *إنتهاء الاختبار العكسي*\n💰 الرصيد: {sim.capital:.2f}$\n📉 Max DD: {sim.max_dd:.2f}%"
+        best = f"🏆 *أفضل صفقة:*\n{h[0]['symbol']} | {h[0]['pnl']:+.2f}%\n📅 {h[0]['time'].strftime('%m-%d %H:%M')}"
+        worst = f"💔 *أسوأ صفقة:*\n{h[-1]['symbol']} | {h[-1]['pnl']:+.2f}%\n📅 {h[-1]['time'].strftime('%m-%d %H:%M')}"
+        
+        print(report)
+        # هنا يتم استدعاء send_telegram (تأكد من وضع التوكن)
     
-    h.sort(key=lambda x: x['pnl'], reverse=True)
-    top_5, worst_5 = h[:5], h[-5:][::-1]
-    
-    final_pnl = ((sim.capital - SETTINGS['INITIAL_CAPITAL']) / SETTINGS['INITIAL_CAPITAL']) * 100
-    win_rate = len([t for t in h if t['pnl'] > 0]) / len(h) * 100
-
-    report = f"📊 *تقرير المحفظة الاستثماري*\n"
-    report += f"💰 رأس المال النهائي: {sim.capital:.2f}$\n"
-    report += f"📈 صافي الربح: {final_pnl:+.2f}%\n"
-    report += f"📉 أقصى نزول (Drawdown): {sim.max_drawdown:.2f}%\n"
-    report += f"✅ نسبة النجاح: {win_rate:.1f}%\n\n"
-
-    async def format_trades(title, trade_list):
-        msg = f"{title}\n"
-        for i, t in enumerate(trade_list, 1):
-            msg += f"*{i}. {t['symbol']}* | {t['pnl']:+.2f}%\n"
-            msg += f"📅 {t['entry_time'].strftime('%m-%d %H:%M')} | 💵 {t['entry']:.4f} -> {t['exit']:.4f}\n"
-        return msg + "\n"
-
-    await send_telegram(report)
-    await send_telegram(await format_trades("🏆 **أفضل 5 صفقات:**", top_5))
-    await send_telegram(await format_trades("💔 **أسوأ 5 صفقات:**", worst_5))
-    
-    print("✅ تم إرسال التقارير لتليجرام.")
     await exchange.close()
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 ccxt>=4.0.0
 pandas>=2.0.0
-pandas_ta==0.3.14b0
+https://github.com/twopirllc/pandas-ta/archive/master.zip
 backtrader==1.9.78.123
 python-telegram-bot==20.6

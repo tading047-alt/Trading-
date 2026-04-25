@@ -1,94 +1,103 @@
 import ccxt
 import pandas as pd
-import pandas_ta as ta # مكتبة متطورة للمؤشرات
+import backtrader as bt
 import asyncio
+import os
 from telegram import Bot
+from datetime import datetime, timedelta
 
-# --- الإعدادات ---
-TOKEN = '8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo'
+# --- الإعدادات الخاصة بك ---
+TELEGRAM_TOKEN = '8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo'
 CHAT_ID = '5067771509'
 
-class AdvancedScorer:
-    def __init__(self, df):
-        self.df = df
-        self.score = 0
-        self.details = []
+class SqueezeStrategy(bt.Strategy):
+    def __init__(self):
+        self.bb = bt.indicators.BollingerBands(self.data.close, period=20, devfactor=2)
+        self.keltner = bt.indicators.ATR(self.data, period=20)
+        self.sma = bt.indicators.SMA(self.data.close, period=20)
+        
+        # تخزين بيانات الدخول
+        self.entry_date = None
+        self.entry_price = None
 
-    def calculate_all(self):
-        # 1. انخناق بولنجر (Squeeze)
-        bb = ta.bbands(self.df['close'], length=20, std=2)
-        bb_width = bb['BBU_20_2.0'] - self.bb['BBL_20_2.0']
-        if bb_width.iloc[-1] < bb_width.rolling(50).mean().iloc[-1]:
-            self.score += 10
-            self.details.append("BB-Squeeze")
+    def notify_order(self, order):
+        if order.status in [order.Completed] and order.isbuy():
+            self.entry_date = bt.num2date(order.executed.dt)
+            self.entry_price = order.executed.price
 
-        # 2. سيولة كبيرة (Volume Spike)
-        avg_vol = self.df['volume'].rolling(20).mean().iloc[-1]
-        if self.df['volume'].iloc[-1] > avg_vol * 2.5:
-            self.score += 10
-            self.details.append("High-Volume")
+    def next(self):
+        bb_width = self.bb.top[0] - self.bb.bot[0]
+        # إذا اخترق السعر حدود بولينجر، نعتبره دخولاً للتقرير حتى لو لم يكن ضغطاً مثالياً
+        if not self.position:
+            if self.data.close[0] > self.bb.top[0]:
+                self.buy()
+        elif self.data.close[0] < self.sma[0]:
+            self.close()
 
-        # 3. التقاطع الذهبي (Golden Cross)
-        sma50 = ta.sma(self.df['close'], length=50).iloc[-1]
-        sma200 = ta.sma(self.df['close'], length=200).iloc[-1]
-        if sma50 > sma200:
-            self.score += 10
-            self.details.append("Golden-Cross")
+class CryptoScanner:
+    def __init__(self):
+        self.exchange = ccxt.binance({'enableRateLimit': True})
 
-        # 4. دايفرجنس RSI (تبسيط برمجياً)
-        rsi = ta.rsi(self.df['close'], length=14)
-        if self.df['close'].iloc[-1] < self.df['close'].iloc[-10] and rsi.iloc[-1] > rsi.iloc[-10]:
-            self.score += 10
-            self.details.append("RSI-Divergence")
+    def run_backtest(self, symbol):
+        try:
+            since = self.exchange.parse8601((datetime.now() - timedelta(days=30)).isoformat())
+            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe='1h', since=since)
+            if not ohlcv: return None
 
-        # 5. الأموال الذكية (Order Block Detection)
-        # إذا كان السعر الحالي يلمس أدنى سعر في آخر 50 شمعة مع ارتداد
-        if self.df['low'].iloc[-1] <= self.df['low'].rolling(50).min().iloc[-1]:
-            self.score += 10
-            self.details.append("SMC-DemandZone")
+            df = pd.DataFrame(ohlcv, columns=['datetime', 'open', 'high', 'low', 'close', 'volume'])
+            current_price = df['close'].iloc[-1]
+            avg_vol = df['volume'].mean()
 
-        return self.score, ", ".join(self.details)
+            cerebro = bt.Cerebro()
+            cerebro.addstrategy(SqueezeStrategy)
+            data = bt.feeds.PandasData(dataname=df.assign(datetime=pd.to_datetime(df['datetime'], unit='ms')).set_index('datetime'))
+            cerebro.adddata(data)
+            cerebro.broker.setcash(1000.0)
+            
+            results = cerebro.run()
+            strat = results[0]
+            profit = round(((cerebro.broker.getvalue() - 1000) / 1000) * 100, 2)
+
+            # ضمان وجود بيانات في كل سطر
+            return {
+                'Symbol': symbol,
+                'Current_Price': current_price,
+                'Avg_Volume': round(avg_vol, 2),
+                'Date_Entree': strat.entry_date.strftime('%Y-%m-%d') if strat.entry_date else "No_Breakout",
+                'Heure_Entree': strat.entry_date.strftime('%H:%M') if strat.entry_date else "--:--",
+                'Prix_Entree': round(strat.entry_price, 6) if strat.entry_price else 0,
+                'Resultat_Net_%': profit
+            }
+        except Exception:
+            return None
+
+async def send_to_telegram(all_data):
+    file_path = "Detailed_Report.csv"
+    df = pd.DataFrame(all_data).sort_values(by='Resultat_Net_%', ascending=False)
+    df.to_csv(file_path, index=False)
+
+    summary = f"✅ فحص شامل لـ {len(df)} عملة\n"
+    summary += f"📅 تاريخ التقرير: {datetime.now().strftime('%Y-%m-%d')}\n"
+    summary += f"🔝 أفضل ربح محقق: {df['Resultat_Net_%'].max()}%"
+
+    bot = Bot(token=TELEGRAM_TOKEN)
+    async with bot:
+        await bot.send_message(chat_id=CHAT_ID, text=summary)
+        with open(file_path, 'rb') as f:
+            await bot.send_document(chat_id=CHAT_ID, document=f, caption="التقرير الكامل بجميع المعطيات المتاحة 📄")
 
 async def main():
-    exchange = ccxt.binance()
-    tickers = exchange.fetch_tickers()
-    symbols = [s[0] for s in sorted(tickers.items(), key=lambda x: x[1].get('quoteVolume', 0), reverse=True) if '/USDT' in s[0]][:100] # فحص أفضل 100 لتوفير الوقت
-
-    final_results = []
-
-    for symbol in symbols:
-        try:
-            print(f"جاري تحليل {symbol}...")
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=250)
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            
-            scorer = AdvancedScorer(df)
-            score, reasons = scorer.calculate_all()
-            
-            final_results.append({
-                'Symbol': symbol,
-                'Score': score,
-                'Reasons': reasons,
-                'Price': df['close'].iloc[-1]
-            })
-        except:
-            continue
-
-    # إرسال تقرير بالعملات التي سكورها عالي (> 30)
-    df_final = pd.DataFrame(final_results).sort_values(by='Score', ascending=False)
-    top_picks = df_final[df_final['Score'] >= 30]
-
-    report = "🎯 رادار العملات بنظام السكور الذكي\n\n"
-    for _, row in top_picks.head(10).iterrows():
-        report += f"💎 {row['Symbol']} | Score: {row['Score']}/50\n"
-        report += f"📡 المؤشرات: {row['Reasons']}\n\n"
-
-    bot = Bot(token=TOKEN)
-    async with bot:
-        await bot.send_message(chat_id=CHAT_ID, text=report)
-        df_final.to_csv("Detailed_Score_Report.csv", index=False)
-        with open("Detailed_Score_Report.csv", 'rb') as f:
-            await bot.send_document(chat_id=CHAT_ID, document=f)
+    scanner = CryptoScanner()
+    tickers = scanner.exchange.fetch_tickers()
+    symbols = [s[0] for s in sorted(tickers.items(), key=lambda x: x[1].get('quoteVolume', 0), reverse=True) if '/USDT' in s[0]][:300]
+    
+    results_list = []
+    for i, symbol in enumerate(symbols):
+        print(f"[{i+1}/300] Analyzing {symbol}...")
+        res = scanner.run_backtest(symbol)
+        if res: results_list.append(res)
+    
+    await send_to_telegram(results_list)
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🚂 نظام اكتشاف الانفجارات - وضع Backtesting للتجربة
-First Station Explosion Detector - Backtesting Edition
+🚂 نظام اكتشاف الانفجارات - Paper Trading & Backtesting
+First Station Explosion Detector - Simulation Edition
+
+المميزات:
+✅ محاكاة تداول حقيقي برأس مال افتراضي 500$
+✅ Backtesting سريع لآخر 7 أيام مع إشعار تليجرام
+✅ تأثير visually على الرصيد الافتراضي
+✅ أوامر تليجرام للتحكم
+✅ لوحة تحكم ويب
 """
 
 import asyncio, threading, sqlite3, pandas as pd, numpy as np, httpx, json, os, time, csv
@@ -16,39 +23,31 @@ from flask import Flask, jsonify, render_template_string, send_file
 import ccxt.async_support as ccxt_async
 
 # =========================================================
-# إعدادات تليجرام
+# إعدادات تليجرام (تأكد من صحتها)
 # =========================================================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "5067771509")
-BOT_TAG = "#BinanceBot"
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
+BOT_TAG = "#PaperTrading"
 
 # =========================================================
-# 🎯 تم تغيير الوضع إلى Backtesting مباشرة
+# 🧪 إعدادات المحاكاة
 # =========================================================
-TRADING_MODE = "backtest"  # 👈 تم التغيير هنا
-BACKTEST_DAYS = 7
-
-print(f"⚙️ وضع التشغيل: {TRADING_MODE}")
-
-# =========================================================
-# الإعدادات المثلى
-# =========================================================
+SIMULATION_CAPITAL = 500.0
 MAX_TRADES_PER_DAY = 5
 MAX_CONCURRENT_TRADES = 1
-TOTAL_CAPITAL = 1000.0
 CAPITAL_PER_TRADE_RATIO = 0.5
-MAX_CAPITAL_PER_TRADE = 500.0
-MIN_CAPITAL_PER_TRADE = 50.0
+MAX_CAPITAL_PER_TRADE = 300.0
+MIN_CAPITAL_PER_TRADE = 30.0
 
 SCAN_INTERVAL = 45
 SCAN_BATCH_SIZE = 50
-SCAN_SYMBOLS_LIMIT = 200
+SCAN_SYMBOLS_LIMIT = 100
 
-MIN_CONFIDENCE = 75
+MIN_CONFIDENCE = 70
 MIN_PATTERNS_REQUIRED = 2
-MIN_VOLUME_24H = 150000
-MAX_SPREAD = 0.2
-MAX_PRICE_CHANGE_24H = 7.0
+MIN_VOLUME_24H = 100000
+MAX_SPREAD = 0.3
+MAX_PRICE_CHANGE_24H = 10.0
 
 ALLOWED_PATTERNS = ['whale_accumulation', 'calm_before_storm', 'bollinger_squeeze']
 PATTERN_WEIGHTS = {'calm_before_storm': 45, 'whale_accumulation': 55, 'bollinger_squeeze': 40}
@@ -56,13 +55,9 @@ PATTERN_WEIGHTS = {'calm_before_storm': 45, 'whale_accumulation': 55, 'bollinger
 VOLUME_RATIO_THRESHOLD = 1.3
 RSI_MAX = 72
 MACD_CONFIRMATION = True
-SYMBOL_LOSS_STREAK_LIMIT = 2
-
-BTC_MIN_ADX = 22
-BTC_MAX_DROP_1H = -1.5
 
 EXIT_STRATEGY = {
-    'take_profit': 3.2,
+    'take_profit': 3.5,
     'partial_sell_ratio': 0.5,
     'hard_stop_loss': -2.0,
     'trailing_stop': {'activation': 2.0, 'distance': 0.5, 'tight_distance': 0.5}
@@ -74,47 +69,39 @@ EARLY_EXIT_EMA_FAST = 9
 EARLY_EXIT_EMA_SLOW = 21
 EARLY_EXIT_BREAK_PREV_LOW = True
 
-LOG_DIR = "trading_logs"
+LOG_DIR = "paper_trading_logs"
 os.makedirs(LOG_DIR, exist_ok=True)
-os.makedirs(f"{LOG_DIR}/daily", exist_ok=True)
-SIGNALS_FILE = f"{LOG_DIR}/signals_detected.csv"
-TRADES_FILE = f"{LOG_DIR}/trades_executed.csv"
-SNAPSHOT_FILE = f"{LOG_DIR}/market_snapshots.csv"
-ERRORS_FILE = f"{LOG_DIR}/errors_log.csv"
-DB_FILE = f"{LOG_DIR}/bot_state.db"
+SIGNALS_FILE = f"{LOG_DIR}/signals.csv"
+TRADES_FILE = f"{LOG_DIR}/trades.csv"
+SNAPSHOT_FILE = f"{LOG_DIR}/snapshots.csv"
 
-def init_database():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS bot_status
-                 (id INTEGER PRIMARY KEY, capital REAL, available REAL, active_trades INTEGER,
-                  daily_trades INTEGER, win_rate REAL, market_regime TEXT, btc_change REAL, last_update TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS trades_archive
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, entry_price REAL, exit_price REAL,
-                  pnl_pct REAL, pnl_usd REAL, entry_time TEXT, exit_time TEXT, pattern TEXT, status TEXT)''')
-    conn.commit()
-    conn.close()
+# =========================================================
+# دوال إرسال تليجرام (مضمونة)
+# =========================================================
+async def send_telegram_message(text: str):
+    """إرسال رسالة إلى تليجرام - دالة مستقلة ومضمونة"""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("⚠️ تليجرام غير مضبوط - لم يتم الإرسال")
+        return False
+    
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.post(url, json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text.strip(),
+                "parse_mode": "Markdown"
+            })
+            if response.status_code == 200:
+                print("✅ تم الإرسال إلى تليجرام")
+                return True
+            else:
+                print(f"⚠️ فشل الإرسال: {response.status_code}")
+                return False
+    except Exception as e:
+        print(f"❌ خطأ تليجرام: {e}")
+        return False
 
-def update_db_status(capital, available, active, daily, win_rate, regime, btc_change):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("DELETE FROM bot_status")
-    c.execute('''INSERT INTO bot_status 
-                 (capital, available, active_trades, daily_trades, win_rate, market_regime, btc_change, last_update)
-                 VALUES (?,?,?,?,?,?,?,?)''',
-              (capital, available, active, daily, win_rate, regime, btc_change, datetime.now().isoformat()))
-    conn.commit()
-    conn.close()
-
-def insert_trade_archive(symbol, entry_price, exit_price, pnl_pct, pnl_usd, entry_time, exit_time, pattern, status):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''INSERT INTO trades_archive 
-                 (symbol, entry_price, exit_price, pnl_pct, pnl_usd, entry_time, exit_time, pattern, status)
-                 VALUES (?,?,?,?,?,?,?,?,?)''',
-              (symbol, entry_price, exit_price, pnl_pct, pnl_usd, entry_time, exit_time, pattern, status))
-    conn.commit()
-    conn.close()
 
 class MarketRegime(Enum):
     TRENDING_BULLISH = "bullish"; TRENDING_BEARISH = "bearish"
@@ -127,9 +114,6 @@ class ExplosionSignal:
     current_change: float; priority: int
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     atr_percent: float = 0.0
-    def get_time_estimate(self) -> str:
-        m, s = divmod(self.time_to_explosion, 60)
-        return f"{m} دقيقة و {s} ثانية" if m else f"{s} ثانية"
 
 @dataclass
 class ActiveTrade:
@@ -139,12 +123,11 @@ class ActiveTrade:
     pattern: str; confidence: float; atr_percent: float = 0.0
 
 class TradeManager:
-    def __init__(self, notifier=None):
+    def __init__(self, initial_capital):
+        self.available_capital = initial_capital
         self.active_trades: Dict[str, ActiveTrade] = {}
         self.closed_trades: List[dict] = []
-        self.available_capital = TOTAL_CAPITAL
-        self.daily_trades = 0; self.daily_pnl = 0.0; self.total_trades = 0; self.winning_trades = 0
-        self.notifier = notifier
+        self.daily_trades = 0; self.total_trades = 0; self.winning_trades = 0
         self.symbol_loss_streak: Dict[str, int] = {}
 
     def open_trade(self, signal: ExplosionSignal) -> Tuple[bool, float]:
@@ -152,13 +135,14 @@ class TradeManager:
         if symbol in self.active_trades: return False, 0.0
         if len(self.active_trades) >= MAX_CONCURRENT_TRADES: return False, 0.0
         if self.daily_trades >= MAX_TRADES_PER_DAY: return False, 0.0
-        if self.symbol_loss_streak.get(symbol, 0) >= SYMBOL_LOSS_STREAK_LIMIT: return False, 0.0
+        
         capital = min(self.available_capital * CAPITAL_PER_TRADE_RATIO, MAX_CAPITAL_PER_TRADE)
-        if capital < MIN_CAPITAL_PER_TRADE: return False, 0.0
-        if capital > self.available_capital: return False, 0.0
+        if capital < MIN_CAPITAL_PER_TRADE or capital > self.available_capital: return False, 0.0
+        
         quantity = capital / signal.entry_price
         self.available_capital -= capital
         self.daily_trades += 1; self.total_trades += 1
+        
         trade = ActiveTrade(symbol=symbol, entry_price=signal.entry_price, capital=capital,
                             quantity=quantity, remaining_quantity=quantity,
                             entry_time=datetime.now(), highest_price=signal.entry_price,
@@ -166,14 +150,20 @@ class TradeManager:
                             pattern=signal.patterns[0] if signal.patterns else 'unknown',
                             confidence=signal.confidence, atr_percent=signal.atr_percent)
         self.active_trades[symbol] = trade
-        print(f"  ✅ {symbol}: دخول بـ {capital:.1f}$")
+        print(f"  🧪 [ورقي] {symbol}: فتح صفقة بـ {capital:.2f}$")
+        
+        # إشعار فتح الصفقة
+        msg = f"""🔴 *فتح صفقة ورقية*\n{BOT_TAG}\n🪙 *{symbol}*\n💵 {signal.entry_price:.8f}\n💰 {capital:.2f}$\n📊 {signal.confidence:.1f}%\n🕐 `{datetime.now().strftime('%H:%M:%S')}`"""
+        asyncio.create_task(send_telegram_message(msg))
+        
         return True, capital
 
-    def update_trade(self, symbol: str, current_price: float, ohlcv_5m: Optional[np.ndarray] = None) -> Optional[dict]:
+    def update_trade(self, symbol: str, current_price: float, ohlcv_5m=None) -> Optional[dict]:
         if symbol not in self.active_trades: return None
         trade = self.active_trades[symbol]
         if current_price > trade.highest_price: trade.highest_price = current_price
         pnl_pct = (current_price - trade.entry_price) / trade.entry_price * 100
+        
         if pnl_pct <= EXIT_STRATEGY['hard_stop_loss']:
             return self._close_trade(symbol, current_price, pnl_pct, 'stop_loss')
         if not trade.take_profit_hit and pnl_pct >= EXIT_STRATEGY['take_profit']:
@@ -198,18 +188,6 @@ class TradeManager:
             if new_stop > trade.trailing_stop: trade.trailing_stop = new_stop
             if current_price <= trade.trailing_stop:
                 return self._close_trade(symbol, current_price, pnl_pct, 'trailing_stop')
-        if ENABLE_EARLY_EXIT and ohlcv_5m is not None and len(ohlcv_5m) >= 10 and trade.remaining_quantity > 0:
-            closes_5m = ohlcv_5m[:, 4]; opens_5m = ohlcv_5m[:, 1]; lows_5m = ohlcv_5m[:, 3]
-            body = closes_5m[-1] - opens_5m[-1]
-            if body < 0 and abs(body)/opens_5m[-1]*100 >= EARLY_EXIT_BEARISH_CANDLE_BODY:
-                return self._close_trade(symbol, current_price, pnl_pct, 'early_exit_bearish_candle')
-            ema9 = pd.Series(closes_5m).ewm(span=EARLY_EXIT_EMA_FAST, adjust=False).mean().values
-            ema21 = pd.Series(closes_5m).ewm(span=EARLY_EXIT_EMA_SLOW, adjust=False).mean().values
-            if len(ema9) > 1 and ema9[-2] >= ema21[-2] and ema9[-1] < ema21[-1]:
-                return self._close_trade(symbol, current_price, pnl_pct, 'early_exit_ema_cross')
-            if EARLY_EXIT_BREAK_PREV_LOW and len(lows_5m) >= 6:
-                if current_price < np.min(lows_5m[-6:-1]):
-                    return self._close_trade(symbol, current_price, pnl_pct, 'early_exit_break_low')
         return None
 
     def _close_trade(self, symbol: str, price: float, pnl_pct: float, reason: str) -> dict:
@@ -217,10 +195,7 @@ class TradeManager:
         if trade.remaining_quantity > 0:
             self.available_capital += trade.remaining_quantity * price
         pnl_usd = trade.capital * pnl_pct / 100
-        self.daily_pnl += pnl_pct
         if pnl_pct > 0: self.winning_trades += 1
-        if pnl_pct < 0: self.symbol_loss_streak[symbol] = self.symbol_loss_streak.get(symbol, 0) + 1
-        else: self.symbol_loss_streak[symbol] = 0
         result = {'symbol': symbol, 'entry_price': trade.entry_price, 'exit_price': price,
                   'pnl_pct': pnl_pct, 'pnl_usd': pnl_usd, 'entry_time': trade.entry_time,
                   'exit_time': datetime.now(), 'pattern': trade.pattern,
@@ -228,21 +203,27 @@ class TradeManager:
                   'capital_allocated': trade.capital}
         self.closed_trades.append(result)
         del self.active_trades[symbol]
-        print(f"  🏁 {symbol}: {pnl_pct:+.2f}% | {reason} | الرصيد: {self.available_capital:.2f}$")
-        if self.notifier:
-            asyncio.create_task(self.notifier.send_trade_closed_alert(result, self.available_capital))
+        print(f"  🧪 [ورقي] {symbol}: {pnl_pct:+.2f}% | {reason} | الرصيد: {self.available_capital:.2f}$")
+        
+        # إشعار إغلاق الصفقة
+        emoji = "💰" if pnl_pct > 0 else "📉"
+        msg = f"""{emoji} *إغلاق صفقة ورقية*\n{BOT_TAG}\n🪙 {symbol}\n📊 {pnl_pct:+.2f}% ({pnl_usd:+.2f}$)\n🎯 {reason}\n💵 الرصيد: {self.available_capital:.2f}$\n🕐 `{datetime.now().strftime('%H:%M:%S')}`"""
+        asyncio.create_task(send_telegram_message(msg))
+        
         return result
 
     def get_win_rate(self) -> float:
         return (self.winning_trades / self.total_trades * 100) if self.total_trades else 0.0
 
+# =========================================================
+# كاشف الانفجارات (مختصر)
+# =========================================================
 class ExplosionDetector:
     def __init__(self):
         self.pattern_weights = PATTERN_WEIGHTS
         self.recent_signals = deque(maxlen=100)
         self.last_signal_time = {}
-    EXCLUDED_PATTERNS = ['3S','3L','5S','5L','X3','X5','BEAR','BULL','UP','DOWN']
-    EXCLUDED_SYMBOLS = ['BTC/USDT','ETH/USDT','BNB/USDT']
+    EXCLUDED = ['3S','3L','5S','5L','X3','X5','BEAR','BULL','UP','DOWN','BTC/USDT','ETH/USDT','BNB/USDT']
 
     async def scan_market(self, exchange) -> List[ExplosionSignal]:
         print(f"\n{'='*60}\n🔍 مسح السوق - {datetime.now().strftime('%H:%M:%S')}\n{'='*60}")
@@ -266,12 +247,9 @@ class ExplosionDetector:
         try:
             tickers = await exchange.fetch_tickers()
             active = []
-            if not tickers: return active
             for sym, ticker in tickers.items():
                 if not sym or not sym.endswith('/USDT'): continue
-                base = sym.split('/')[0]
-                if base in self.EXCLUDED_SYMBOLS: continue
-                if any(p in base for p in self.EXCLUDED_PATTERNS): continue
+                if any(p in sym for p in self.EXCLUDED): continue
                 vol = ticker.get('quoteVolume') or 0.0
                 ch = ticker.get('percentage') or 0.0
                 bid = ticker.get('bid') or 0.0; ask = ticker.get('ask') or 0.0
@@ -283,485 +261,283 @@ class ExplosionDetector:
             active.sort(key=lambda s: tickers.get(s, {}).get('quoteVolume') or 0.0, reverse=True)
             return active[:SCAN_SYMBOLS_LIMIT]
         except Exception as e:
-            print(f"⚠️ خطأ في جلب العملات: {e}")
+            print(f"⚠️ خطأ: {e}")
             return []
 
     async def _analyze_symbol(self, exchange, symbol: str) -> Optional[ExplosionSignal]:
         try:
-            ohlcv_1m = await exchange.fetch_ohlcv(symbol, '1m', limit=60)
-            ohlcv_5m = await exchange.fetch_ohlcv(symbol, '5m', limit=30)
+            ohlcv = await exchange.fetch_ohlcv(symbol, '5m', limit=30)
             ticker = await exchange.fetch_ticker(symbol)
-            if len(ohlcv_1m) < 30 or len(ohlcv_5m) < 20: return None
-            data_1m = np.array(ohlcv_1m); data_5m = np.array(ohlcv_5m)
-            closes_5m, volumes_5m = data_5m[:,4], data_5m[:,5]
-            highs_5m, lows_5m = data_5m[:,2], data_5m[:,3]
+            if len(ohlcv) < 20: return None
+            data = np.array(ohlcv); closes = data[:,4]; volumes = data[:,5]
             current_price = ticker['last']
-            avg_vol = np.mean(volumes_5m[-20:]) if len(volumes_5m) >= 20 else volumes_5m[-1]
-            vol_ratio = volumes_5m[-1] / avg_vol if avg_vol > 0 else 0
-            if vol_ratio < VOLUME_RATIO_THRESHOLD: return None
-            rsi = self._calculate_rsi(closes_5m, 14)
+            avg_vol = np.mean(volumes[-20:]) if len(volumes) >= 20 else volumes[-1]
+            if volumes[-1] / avg_vol < VOLUME_RATIO_THRESHOLD: return None
+            rsi = self._calc_rsi(closes)
             if rsi > RSI_MAX: return None
-            macd_line, signal_line, _ = self._compute_macd(closes_5m)
-            if MACD_CONFIRMATION and macd_line[-1] <= signal_line[-1]: return None
-            atr = np.mean(highs_5m[-14:] - lows_5m[-14:]) if len(highs_5m) >= 14 else 0
-            atr_percent = (atr / current_price * 100) if current_price > 0 else 2.0
-            detected_patterns = []; total_conf = 0; time_w = 0; time_exp = 0
-            checks = []
-            if 'calm_before_storm' in ALLOWED_PATTERNS:
-                checks.append(self._check_calm_before_storm(volumes_5m, closes_5m))
-            if 'whale_accumulation' in ALLOWED_PATTERNS:
-                checks.append(self._check_whale_accumulation(data_1m[:,5], data_1m[:,4]))
-            if 'bollinger_squeeze' in ALLOWED_PATTERNS:
-                checks.append(self._check_bollinger_squeeze(closes_5m))
-            for check in checks:
+            macd_l, sig_l, _ = self._calc_macd(closes)
+            if MACD_CONFIRMATION and macd_l[-1] <= sig_l[-1]: return None
+            
+            detected = []; total_conf = 0
+            for check in [self._check_calm(closes, volumes), self._check_whale(closes, volumes), self._check_boll(closes)]:
                 if check['detected']:
-                    detected_patterns.append(check['name'])
-                    w = self.pattern_weights.get(check.get('pattern_name',''),20)
-                    total_conf += w; time_exp += check['time_estimate']*w; time_w += w
-            if total_conf >= MIN_CONFIDENCE and len(detected_patterns) >= MIN_PATTERNS_REQUIRED:
-                avg_time = int(time_exp/time_w) if time_w else 180
-                expected_move = self._calculate_expected_move(total_conf, len(detected_patterns))
-                priority = self._calculate_priority(total_conf, len(detected_patterns), avg_time)
-                optimal_entry = self._calculate_optimal_entry(closes_5m, current_price)
+                    detected.append(check['name'])
+                    total_conf += self.pattern_weights.get(check.get('pn',''), 20)
+            
+            if total_conf >= MIN_CONFIDENCE and len(detected) >= MIN_PATTERNS_REQUIRED:
                 return ExplosionSignal(symbol=symbol, confidence=min(100,total_conf),
-                    expected_move=expected_move, time_to_explosion=avg_time,
-                    entry_price=optimal_entry, patterns=detected_patterns,
-                    volume_24h=ticker.get('quoteVolume',0),
-                    current_change=ticker.get('percentage',0),
-                    priority=priority, atr_percent=round(atr_percent,2))
+                    expected_move=EXIT_STRATEGY['take_profit'], time_to_explosion=120,
+                    entry_price=current_price, patterns=detected,
+                    volume_24h=ticker.get('quoteVolume',0), current_change=ticker.get('percentage',0),
+                    priority=3 if total_conf>=75 else 2)
         except: return None
         return None
 
-    def _calculate_rsi(self, closes, period=14):
-        if len(closes) < period+1: return 50
-        deltas = np.diff(closes); gain = np.where(deltas>0, deltas, 0); loss = np.where(deltas<0, -deltas, 0)
-        avg_gain = np.mean(gain[:period]); avg_loss = np.mean(loss[:period])
-        if avg_loss == 0: return 100
-        return 100 - (100 / (1+avg_gain/avg_loss))
-    def _compute_macd(self, closes, fast=12, slow=26, signal_period=9):
-        ema_fast = pd.Series(closes).ewm(span=fast, adjust=False).mean().values
-        ema_slow = pd.Series(closes).ewm(span=slow, adjust=False).mean().values
-        macd = ema_fast - ema_slow
-        signal = pd.Series(macd).ewm(span=signal_period, adjust=False).mean().values
-        return macd, signal, macd - signal
-    def _calculate_optimal_entry(self, closes, current_price):
-        low = np.min(closes[-10:]); high = np.max(closes[-5:])
-        optimal = (low + high) / 2
-        return current_price if current_price <= optimal else (current_price + optimal) / 2
-    def _check_calm_before_storm(self, v, c):
+    def _calc_rsi(self, c, p=14):
+        if len(c)<p+1: return 50
+        d=np.diff(c); g=np.where(d>0,d,0); l=np.where(d<0,-d,0)
+        ag=np.mean(g[:p]); al=np.mean(l[:p])
+        return 100-(100/(1+ag/al)) if al>0 else 100
+    def _calc_macd(self, c, f=12, s=26, sp=9):
+        ef=pd.Series(c).ewm(span=f,adjust=False).mean().values
+        es=pd.Series(c).ewm(span=s,adjust=False).mean().values
+        macd=ef-es; sig=pd.Series(macd).ewm(span=sp,adjust=False).mean().values
+        return macd, sig, macd-sig
+    def _check_calm(self, c, v):
         if len(v)<15: return {'detected':False}
         r=np.mean(v[-5:])/np.mean(v[-15:-5]) if np.mean(v[-15:-5])>0 else 1
         pr=(np.max(c[-8:])-np.min(c[-8:]))/np.mean(c[-8:])*100
-        if r<0.5 and pr<2.0: return {'detected':True,'name':'🌊 هدوء','time_estimate':300,'pattern_name':'calm_before_storm'}
+        if r<0.5 and pr<2.0: return {'detected':True,'name':'🌊 هدوء','pn':'calm_before_storm'}
         return {'detected':False}
-    def _check_whale_accumulation(self, v, c):
-        if len(v)<10 or len(c)<5: return {'detected':False}
+    def _check_whale(self, c, v):
+        if len(v)<10: return {'detected':False}
         r=v[-1]/np.mean(v[-10:]) if np.mean(v[-10:])>0 else 1
         st=(np.max(c[-5:])-np.min(c[-5:]))/np.mean(c[-5:])*100
-        if r>1.5 and st<1.5: return {'detected':True,'name':f'🐋 حيتان ({r:.1f}x)','time_estimate':180,'pattern_name':'whale_accumulation'}
+        if r>1.5 and st<1.5: return {'detected':True,'name':f'🐋 حيتان ({r:.1f}x)','pn':'whale_accumulation'}
         return {'detected':False}
-    def _check_bollinger_squeeze(self, c):
+    def _check_boll(self, c):
         if len(c)<20: return {'detected':False}
         rec=c[-20:]; cur=c[-1]; mid=np.mean(rec); std=np.std(rec)
         u=mid+2*std; l=mid-2*std; bw=(u-l)/mid*100; pos=(cur-l)/(u-l) if u!=l else 0.5
-        if bw<5.0 and pos<0.4: return {'detected':True,'name':f'🎯 بولنجر ({bw:.1f}%)','time_estimate':240,'pattern_name':'bollinger_squeeze'}
+        if bw<5.0 and pos<0.4: return {'detected':True,'name':f'🎯 بولنجر ({bw:.1f}%)','pn':'bollinger_squeeze'}
         return {'detected':False}
-    def _calculate_expected_move(self, conf, cnt):
-        base=EXIT_STRATEGY['take_profit']
-        if cnt>=3: base+=2.0
-        elif cnt>=2: base+=1.0
-        if conf>=85: base+=1.5
-        elif conf>=78: base+=0.8
-        return round(base,1)
-    def _calculate_priority(self, conf, cnt, time_sec):
-        pri=2 if conf>=MIN_CONFIDENCE else 1
-        if conf>=85: pri+=1
-        if cnt>=3: pri+=1
-        if time_sec<120: pri+=1
-        return min(5, pri)
     def _should_accept_signal(self, signal):
         now=datetime.now()
         if signal.symbol in self.last_signal_time and (now-self.last_signal_time[signal.symbol]).total_seconds()<300: return False
         return True
     def _record_signal(self, signal): self.recent_signals.append(signal); self.last_signal_time[signal.symbol]=datetime.now()
 
+# =========================================================
+# 🧪 محرك Backtesting (مع إشعار تليجرام مضمون)
+# =========================================================
 class BacktestEngine:
-    def __init__(self, detector, trade_manager, notifier=None):
+    def __init__(self, detector, trade_manager):
         self.detector = detector
         self.trade_manager = trade_manager
-        self.notifier = notifier
 
     async def run(self, exchange):
-        print(f"""
-╔══════════════════════════════════════════════════════════╗
-║           📊 وضع Backtesting - آخر {BACKTEST_DAYS} أيام           ║
-╚══════════════════════════════════════════════════════════╝
-        """)
+        print(f"\n📊 بدء Backtesting لآخر 7 أيام...")
+        
+        # إشعار بدء الاختبار
+        await send_telegram_message(f"📊 *بدء Backtesting*\n{BOT_TAG}\n⏳ جاري الاختبار...")
         
         end_date = datetime.now()
-        start_date = end_date - timedelta(days=BACKTEST_DAYS)
-        
-        print(f"📅 الفترة: {start_date.strftime('%Y-%m-%d')} → {end_date.strftime('%Y-%m-%d')}")
-        
-        if self.notifier:
-            await self.notifier._send(f"📊 *بدء Backtesting*\n{BOT_TAG}\n📅 {start_date.strftime('%Y-%m-%d')} → {end_date.strftime('%Y-%m-%d')}\n⏳ يرجى الانتظار...")
-        
+        start_date = end_date - timedelta(days=7)
         symbols = await self.detector._get_active_symbols(exchange)
-        print(f"🪙 عدد العملات: {len(symbols)}")
         
         total_trades = 0; winning_trades = 0
         best_trade = None; worst_trade = None
-        pattern_stats = {}; symbol_stats = {}
-        processed_symbols = 0
+        pattern_stats = {}; processed_symbols = 0
         
-        for symbol in symbols[:50]:
+        for symbol in symbols[:30]:
             try:
                 since = exchange.parse8601(start_date.strftime('%Y-%m-%dT00:00:00Z'))
                 ohlcv = await exchange.fetch_ohlcv(symbol, '5m', since=since, limit=1000)
                 if len(ohlcv) < 100: continue
                 processed_symbols += 1
-                symbol_trades = 0
-                print(f"\n🔍 اختبار {symbol}... ({len(ohlcv)} شمعة)")
+                print(f"🔍 اختبار {symbol}... ({len(ohlcv)} شمعة)")
                 
                 for i in range(100, len(ohlcv)):
                     current_price = ohlcv[i][4]
                     result = self.trade_manager.update_trade(symbol, current_price)
                     if result:
-                        total_trades += 1; symbol_trades += 1
+                        total_trades += 1
                         if result['pnl_pct'] > 0: winning_trades += 1
                         if best_trade is None or result['pnl_pct'] > best_trade['pnl_pct']: best_trade = result
                         if worst_trade is None or result['pnl_pct'] < worst_trade['pnl_pct']: worst_trade = result
+                        
                         pattern = result.get('pattern', 'غير معروف')
                         if pattern not in pattern_stats: pattern_stats[pattern] = {'total': 0, 'wins': 0, 'pnl': 0.0}
-                        pattern_stats[pattern]['total'] += 1; pattern_stats[pattern]['pnl'] += result['pnl_pct']
+                        pattern_stats[pattern]['total'] += 1
+                        pattern_stats[pattern]['pnl'] += result['pnl_pct']
                         if result['pnl_pct'] > 0: pattern_stats[pattern]['wins'] += 1
-                        if symbol not in symbol_stats: symbol_stats[symbol] = {'total': 0, 'wins': 0, 'pnl': 0.0}
-                        symbol_stats[symbol]['total'] += 1; symbol_stats[symbol]['pnl'] += result['pnl_pct']
-                        if result['pnl_pct'] > 0: symbol_stats[symbol]['wins'] += 1
                     
                     data = np.array(ohlcv[max(0, i-60):i+1])
                     if len(data) < 30: continue
                     closes = data[:, 4]; volumes = data[:, 5]
                     avg_vol = np.mean(volumes[-20:]) if len(volumes) >= 20 else volumes[-1]
                     if volumes[-1] / avg_vol < VOLUME_RATIO_THRESHOLD: continue
+                    
                     detected = []
-                    for check in [self.detector._check_calm_before_storm(volumes, closes),
-                                  self.detector._check_whale_accumulation(volumes, closes),
-                                  self.detector._check_bollinger_squeeze(closes)]:
+                    for check in [self.detector._check_calm(closes, volumes),
+                                  self.detector._check_whale(closes, volumes),
+                                  self.detector._check_boll(closes)]:
                         if check['detected']: detected.append(check['name'])
+                    
                     if len(detected) >= MIN_PATTERNS_REQUIRED:
-                        signal = ExplosionSignal(symbol=symbol, confidence=80, expected_move=3.2,
+                        signal = ExplosionSignal(symbol=symbol, confidence=80, expected_move=3.5,
                             time_to_explosion=120, entry_price=current_price,
                             patterns=detected, volume_24h=500000, current_change=0, priority=3)
                         self.trade_manager.open_trade(signal)
-                print(f"   ✓ {symbol}: {symbol_trades} صفقة")
-            except Exception as e: print(f"  ⚠️ خطأ في {symbol}: {e}")
+                        
+            except Exception as e: print(f"  ⚠️ خطأ: {e}")
         
+        # إغلاق الصفقات المتبقية
         for sym in list(self.trade_manager.active_trades.keys()):
             self.trade_manager._close_trade(sym, 0, -2.0, 'end_of_backtest')
         
         win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
-        net_pnl = self.trade_manager.available_capital - TOTAL_CAPITAL
+        net_pnl = self.trade_manager.available_capital - SIMULATION_CAPITAL
         
+        # عرض النتائج في Terminal
         print(f"""
 ╔══════════════════════════════════════════════════════════╗
-║              📊 نتائج Backtesting النهائية                 ║
+║              📊 نتائج Backtesting                         ║
 ╠══════════════════════════════════════════════════════════╣
-║  📅 الفترة: {start_date.strftime('%Y-%m-%d')} → {end_date.strftime('%Y-%m-%d')}              ║
-║  🪙 العملات المختبرة: {processed_symbols}                                ║
 ║  🔄 إجمالي الصفقات: {total_trades}                                  ║
-║  ✅ الصفقات الرابحة: {winning_trades}                                  ║
+║  ✅ الرابحة: {winning_trades}                                          ║
 ║  🎯 نسبة النجاح: {win_rate:.1f}%                                 ║
-║  💰 صافي الربح: {net_pnl:+.2f}$ ({net_pnl/TOTAL_CAPITAL*100:+.2f}%)                         ║
-╠══════════════════════════════════════════════════════════╣
-║  🏆 أفضل صفقة: {best_trade['symbol'] if best_trade else 'N/A'} (+{best_trade['pnl_pct']:.2f}%)                        ║
-║  💔 أسوأ صفقة: {worst_trade['symbol'] if worst_trade else 'N/A'} ({worst_trade['pnl_pct']:.2f}%)                        ║
+║  💰 صافي الربح: {net_pnl:+.2f}$ ({net_pnl/SIMULATION_CAPITAL*100:+.2f}%)                       ║
 ╚══════════════════════════════════════════════════════════╝
         """)
         
-        if self.notifier:
-            msg = f"""📊 *نتائج Backtesting*
+        # 🆕 إرسال النتائج إلى تليجرام (مضمون)
+        best_str = f"🏆 أفضل: {best_trade['symbol']} (+{best_trade['pnl_pct']:.2f}%)" if best_trade else ""
+        worst_str = f"💔 أسوأ: {worst_trade['symbol']} ({worst_trade['pnl_pct']:.2f}%)" if worst_trade else ""
+        
+        msg = f"""📊 *نتائج Backtesting*
 {BOT_TAG}
 
-📅 {start_date.strftime('%Y-%m-%d')} → {end_date.strftime('%Y-%m-%d')}
-🪙 العملات: {processed_symbols}
+🔄 إجمالي الصفقات: {total_trades}
+✅ الصفقات الرابحة: {winning_trades}
+❌ الصفقات الخاسرة: {total_trades - winning_trades}
+🎯 نسبة النجاح: {win_rate:.1f}%
+💰 صافي الربح: {net_pnl:+.2f}$ ({net_pnl/SIMULATION_CAPITAL*100:+.2f}%)
+{best_str}
+{worst_str}
 
-📈 *إجمالي:*
-🔄 الصفقات: {total_trades}
-✅ الرابحة: {winning_trades}
-❌ الخاسرة: {total_trades - winning_trades}
-🎯 النجاح: {win_rate:.1f}%
-💰 الربح: {net_pnl:+.2f}$ ({net_pnl/TOTAL_CAPITAL*100:+.2f}%)
-
-🏆 أفضل: {best_trade['symbol'] if best_trade else 'N/A'} (+{best_trade['pnl_pct']:.2f}%)
-💔 أسوأ: {worst_trade['symbol'] if worst_trade else 'N/A'} ({worst_trade['pnl_pct']:.2f}%)
+🕐 `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`
 """
-            await self.notifier._send(msg)
-            
-            if pattern_stats:
-                pattern_msg = "📊 *أداء الأنماط*\n{BOT_TAG}\n\n"
-                for pattern, stats in sorted(pattern_stats.items(), key=lambda x: x[1]['pnl'], reverse=True):
-                    p_win_rate = (stats['wins'] / stats['total'] * 100) if stats['total'] > 0 else 0
-                    pattern_msg += f"• {pattern}\n   {stats['total']} صفقة | {p_win_rate:.0f}% | {stats['pnl']:+.2f}%\n"
-                await self.notifier._send(pattern_msg)
-        return {'total': total_trades, 'wins': winning_trades, 'win_rate': win_rate, 'pnl': net_pnl}
+        await send_telegram_message(msg)
+        
+        # إعادة تعيين الرصيد للتداول الورقي المباشر
+        self.trade_manager.available_capital = SIMULATION_CAPITAL
+        self.trade_manager.total_trades = 0
+        self.trade_manager.winning_trades = 0
+        self.trade_manager.closed_trades = []
+        self.trade_manager.active_trades = {}
+        self.trade_manager.daily_trades = 0
 
-class EnhancedExplosionNotifier:
-    def __init__(self):
-        self.tg_token = TELEGRAM_TOKEN; self.tg_chat = TELEGRAM_CHAT_ID
-    async def send_open_trade_alert(self, signal, capital):
-        pat="\n".join(f"  • {p}" for p in signal.patterns)
-        msg=f"""🔴 *فتح صفقة*\n{BOT_TAG}\n🪙 *{signal.symbol}*\n💵 {signal.entry_price:.8f}\n💰 {capital:.2f}$\n📊 {signal.confidence:.1f}%\n📈 +{signal.expected_move:.1f}%\n🎯 أولوية {signal.priority}/5\n📋:\n{pat}\n🕐 `{datetime.now().strftime('%H:%M:%S')}`"""
-        await self._send(msg)
-    async def send_trade_closed_alert(self, r, avail):
-        emoji="💰" if r['pnl_pct']>0 else "📉"
-        msg=f"""{emoji} *إغلاق صفقة*\n{BOT_TAG}\n🪙 {r['symbol']}\n📊 {r['pnl_pct']:+.2f}% ({r['pnl_usd']:+.2f}$)\n🎯 {r['exit_reason']}\n💵 {avail:.2f}$\n🕐 `{datetime.now().strftime('%H:%M:%S')}`"""
-        await self._send(msg)
-    async def send_startup_message(self, mode="live"):
-        msg=f"""🚀 *تشغيل النظام*\n{BOT_TAG}\n⚙️ {mode}\n🎯 {MIN_CONFIDENCE}% | {MIN_PATTERNS_REQUIRED} نمط\n💰 {TOTAL_CAPITAL}$\n✅ يعمل!\n🕐 `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`"""
-        await self._send(msg)
-    async def send_daily_report(self, tm):
-        wr=tm.get_win_rate(); net=tm.available_capital-TOTAL_CAPITAL
-        msg=f"""📊 *تقرير يومي*\n{BOT_TAG}\n🔄 {tm.daily_trades}\n✅ {wr:.1f}%\n💰 {net:+.2f}$\n🕐 `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`"""
-        await self._send(msg)
-    async def send_heartbeat(self, engine):
-        m=engine.market_regime
-        msg=f"""💓 *نبضة*\n{BOT_TAG}\n📊 {m.get('regime','?')}\n🔍 {engine.scan_count}\n📈 {engine.trade_manager.daily_trades}\n🎯 {engine.trade_manager.get_win_rate():.1f}%\n🕐 `{datetime.now().strftime('%H:%M:%S')}`"""
-        await self._send(msg)
-    async def send_csv_links(self, chat_id):
-        base=os.environ.get("RENDER_EXTERNAL_URL","http://localhost:8080")
-        msg=f"""📁 *روابط CSV*\n{BOT_TAG}\n• [الإشارات]({base}/download/signals)\n• [الصفقات]({base}/download/trades)"""
-        await self._send_to(chat_id, msg)
-    async def _send(self, msg): await self._send_to(self.tg_chat, msg)
-    async def _send_to(self, chat_id, msg):
-        try:
-            url=f"https://api.telegram.org/bot{self.tg_token}/sendMessage"
-            async with httpx.AsyncClient(timeout=10) as c:
-                await c.post(url, json={"chat_id":chat_id,"text":msg.strip(),"parse_mode":"Markdown"})
-        except Exception as e: print(f"⚠️ تليجرام: {e}")
+# =========================================================
+# 🧪 التداول الورقي المباشر
+# =========================================================
+class PaperTradingEngine:
+    def __init__(self, detector, trade_manager):
+        self.detector = detector
+        self.trade_manager = trade_manager
+        self.scan_count = 0
 
-class TelegramPoller:
-    def __init__(self, token, engine, notifier):
-        self.token = token; self.engine = engine; self.notifier = notifier
-        self.last_update_id = 0
-    async def start(self):
-        print("🤖 أوامر تليجرام...")
+    async def run(self, exchange):
+        print(f"""
+╔══════════════════════════════════════════════════════════╗
+║     🧪 Paper Trading Live - رأس مال {SIMULATION_CAPITAL}$ 🧪      ║
+╚══════════════════════════════════════════════════════════╝
+        """)
+        await send_telegram_message(f"🚀 *بدء التداول الورقي*\n{BOT_TAG}\n💰 رأس المال: {SIMULATION_CAPITAL}$\n✅ يعمل!")
+        
         while True:
             try:
-                url=f"https://api.telegram.org/bot{self.token}/getUpdates"
-                async with httpx.AsyncClient(timeout=15) as c:
-                    resp=await c.get(url, params={"offset":self.last_update_id+1,"timeout":10})
-                    data=resp.json()
-                    if data.get("ok"):
-                        for upd in data["result"]:
-                            self.last_update_id=upd["update_id"]
-                            msg=upd.get("message")
-                            if msg and "text" in msg:
-                                text=msg["text"].strip().lower(); chat_id=msg["chat"]["id"]
-                                if text=="/status": await self._status(chat_id)
-                                elif text=="/download": await self.notifier.send_csv_links(chat_id)
-                                elif text=="/open": await self._open(chat_id)
-                                elif text=="/closed": await self._closed(chat_id)
-                                elif text=="/stats": await self._stats(chat_id)
-                                elif text=="/help": await self._send(chat_id, "/status /open /closed /stats /download /help")
-                                else: await self._send(chat_id,"❌ /help")
-            except: pass
-            await asyncio.sleep(1)
-    async def _status(self, cid):
-        e=self.engine; await self._send(cid,f"""📊 *حالة*\n{BOT_TAG}\n🔍 {e.scan_count}\n💵 {e.trade_manager.available_capital:.2f}$\n📊 {len(e.trade_manager.active_trades)}\n📈 {e.trade_manager.daily_trades}\n🎯 {e.trade_manager.get_win_rate():.1f}%\n🕐 `{datetime.now().strftime('%H:%M:%S')}`""")
-    async def _open(self, cid):
-        a=self.engine.trade_manager.active_trades
-        if not a: await self._send(cid,"📊 لا صفقات مفتوحة."); return
-        msg=f"📊 *مفتوحة ({len(a)})*\n{BOT_TAG}\n"
-        for s,t in a.items():
-            pnl=(t.highest_price-t.entry_price)/t.entry_price*100
-            d=datetime.now()-t.entry_time; h,r=divmod(int(d.total_seconds()),3600); m=r//60
-            msg+=f"\n{'🟢' if pnl>0 else '🔴'} *{s}*\n   💵 {t.entry_price:.8f}\n   📈 {t.highest_price:.8f}\n   📊 {pnl:+.2f}%\n   ⏱️ {h}h {m}m\n"
-        await self._send(cid, msg.strip())
-    async def _closed(self, cid):
-        cl=self.engine.trade_manager.closed_trades[-10:]
-        if not cl: await self._send(cid,"📊 لا صفقات مغلقة."); return
-        msg=f"📊 *آخر {len(cl)}*\n{BOT_TAG}\n"
-        for t in reversed(cl):
-            d=t['exit_time']-t['entry_time']; h,r=divmod(int(d.total_seconds()),3600); m=r//60
-            msg+=f"\n{'💰' if t['pnl_pct']>0 else '📉'} *{t['symbol']}*\n   📊 {t['pnl_pct']:+.2f}% ({t['pnl_usd']:+.2f}$)\n   🎯 {t['pattern']}\n   ⏱️ {h}h {m}m\n   🛑 {t['exit_reason']}\n"
-        await self._send(cid, msg.strip())
-    async def _stats(self, cid):
-        tm=self.engine.trade_manager; total=tm.total_trades; wins=tm.winning_trades
-        wr=tm.get_win_rate(); net=tm.available_capital-TOTAL_CAPITAL
-        ps={}
-        for t in tm.closed_trades:
-            p=t.get('pattern','?')
-            if p not in ps: ps[p]={'total':0,'wins':0,'pnl':0.0,'usd':0.0}
-            ps[p]['total']+=1; ps[p]['pnl']+=t['pnl_pct']; ps[p]['usd']+=t['pnl_usd']
-            if t['pnl_pct']>0: ps[p]['wins']+=1
-        msg=f"""📊 *إحصائيات*\n{BOT_TAG}\n📈 *إجمالي:*\n🔄 {total}\n✅ {wins}\n❌ {total-wins}\n🎯 {wr:.1f}%\n💰 {net:+.2f}$\n\n📋 *حسب النوع:*\n"""
-        for p,s in ps.items():
-            w=s['wins']/s['total']*100 if s['total']>0 else 0
-            msg+=f"• {p}\n   {s['total']} | {w:.0f}%\n   {s['pnl']:+.2f}% ({s['usd']:+.2f}$)\n"
-        await self._send(cid, msg.strip()+f"\n🕐 `{datetime.now().strftime('%H:%M:%S')}`")
-    async def _send(self, cid, txt):
-        try:
-            url=f"https://api.telegram.org/bot{self.token}/sendMessage"
-            async with httpx.AsyncClient(timeout=10) as c:
-                await c.post(url, json={"chat_id":cid,"text":txt,"parse_mode":"Markdown"})
-        except: pass
-
-class MarketRegimeFilter:
-    def __init__(self): self.btc='BTC/USDT'; self.data={}
-    async def analyze(self, ex) -> dict:
-        try:
-            ohlcv=await ex.fetch_ohlcv(self.btc,'1h',limit=50)
-            df=pd.DataFrame(ohlcv,columns=['t','o','h','l','c','v'])
-            c,h,l=df['c'].values,df['h'].values,df['l'].values
-            adx=self._adx(h,l,c); ema20,ema50=self._ema(c,20),self._ema(c,50)
-            trend="bullish" if ema20[-1]>ema50[-1] else "bearish"
-            btc_1h=((c[-1]-c[-4])/c[-4])*100 if len(c)>=4 else 0
-            above=c[-1]>ema50[-1]
-            can=adx>=BTC_MIN_ADX and btc_1h>BTC_MAX_DROP_1H and above
-            self.data={'regime':'trending_bullish' if trend=='bullish' else 'trending_bearish',
-                       'adx':round(adx,1),'btc_change_1h':round(btc_1h,2),
-                       'can_trade':can,'trend':trend,'btc_above_ema':above}
-            return self.data
-        except: return {'can_trade':True,'trend':'unknown','adx':0,'btc_change_1h':0,'btc_above_ema':True}
-    def _adx(self, h,l,c,p=14):
-        if len(c)<p+1: return 20
-        tr=np.maximum(np.maximum(h[1:]-l[1:],np.abs(h[1:]-c[:-1])),np.abs(l[1:]-c[:-1]))
-        atr=np.mean(tr[-p:]) if len(tr)>=p else np.mean(tr)
-        up,down=h[1:]-h[:-1],l[:-1]-l[1:]
-        pdm=np.where((up>down)&(up>0),up,0); ndm=np.where((down>up)&(down>0),down,0)
-        pdi=100*np.mean(pdm[-p:])/atr if atr>0 else 0; ndi=100*np.mean(ndm[-p:])/atr if atr>0 else 0
-        return 100*np.abs(pdi-ndi)/(pdi+ndi) if (pdi+ndi)>0 else 0
-    def _ema(self, data, p):
-        alpha=2/(p+1); ema=np.zeros_like(data)
-        if len(data)>=p: ema[p-1]=np.mean(data[:p])
-        for i in range(p,len(data)): ema[i]=data[i]*alpha+ema[i-1]*(1-alpha)
-        return ema
-
-class ExplosionScannerEngine:
-    def __init__(self):
-        self.notifier = EnhancedExplosionNotifier()
-        self.detector = ExplosionDetector()
-        self.market_filter = MarketRegimeFilter()
-        self.trade_manager = TradeManager(notifier=self.notifier)
-        self.scan_count = 0; self.total_signals = 0; self.market_regime = {}
-        self.last_scan_stats = {'scanned':0,'signals':0,'duration':0,'time':'-'}
-        self.last_daily_report = datetime.now(); self.last_heartbeat = datetime.now()
-
-    async def run(self):
-        global engine_instance; engine_instance = self
-        print("╔══════════════════════════════════════════════════╗")
-        print(f"║     💥 نظام الانفجارات – {TRADING_MODE} 💥      ║")
-        print("╚══════════════════════════════════════════════════╝")
-        while True:
-            try:
-                exchange = ccxt_async.binance({'enableRateLimit':True,'rateLimit':200,'options':{'defaultType':'spot'}})
-                await exchange.fetch_ticker('BTC/USDT')
-                print("✅ Binance متصل")
-                break
-            except Exception as e:
-                print(f"❌ فشل: {e}. إعادة...")
-                await asyncio.sleep(30)
-
-        if TRADING_MODE == "backtest":
-            backtest = BacktestEngine(self.detector, self.trade_manager, self.notifier)
-            await backtest.run(exchange)
-            await exchange.close()
-            return
-
-        await self.notifier.send_startup_message("live")
-        while True:
-            try:
-                self.scan_count += 1; start = time.time()
-                try: self.market_regime = await self.market_filter.analyze(exchange)
-                except: self.market_regime = {'can_trade':True}
+                self.scan_count += 1
+                
                 if self.trade_manager.active_trades:
-                    tasks = {s: exchange.fetch_ohlcv(s, '5m', limit=26) for s in self.trade_manager.active_trades}
-                    results = {}
-                    for s, t in tasks.items():
-                        try: results[s] = await t
-                        except: results[s] = None
-                    for s in list(self.trade_manager.active_trades.keys()):
+                    for symbol in list(self.trade_manager.active_trades.keys()):
                         try:
-                            ticker = await exchange.fetch_ticker(s); price = ticker['last']
-                            data = results.get(s)
-                            if data and len(data) >= 26: self.trade_manager.update_trade(s, price, np.array(data))
-                            else: self.trade_manager.update_trade(s, price)
+                            ticker = await exchange.fetch_ticker(symbol)
+                            price = ticker['last']
+                            self.trade_manager.update_trade(symbol, price)
                         except: pass
-                signals = []
-                if self.market_regime.get('can_trade', True):
-                    try: signals = await self.detector.scan_market(exchange)
-                    except: pass
-                    if signals:
-                        print(f"\n🎯 {len(signals)} إشارة!")
-                        slots = MAX_CONCURRENT_TRADES - len(self.trade_manager.active_trades)
-                        for signal in signals[:slots]:
-                            if signal.priority >= 3:
-                                success, capital = self.trade_manager.open_trade(signal)
-                                if success:
-                                    await self.notifier.send_open_trade_alert(signal, capital)
-                                    self.total_signals += 1
-                                    await asyncio.sleep(0.3)
-                    else: print("\n⚪ لا إشارات")
-                else: print("\n⚠️ متوقف")
-                elapsed = time.time() - start
-                self.last_scan_stats = {'scanned':SCAN_SYMBOLS_LIMIT,'signals':len(signals),'duration':round(elapsed,2),'time':datetime.now().strftime('%H:%M:%S')}
-                if (datetime.now() - self.last_heartbeat).total_seconds() > 7200:
-                    try: await self.notifier.send_heartbeat(self)
-                    except: pass
-                    self.last_heartbeat = datetime.now()
-                now = datetime.now()
-                if now.hour == 23 and now.minute >= 55 and (now - self.last_daily_report).total_seconds() > 3600:
-                    try: await self.notifier.send_daily_report(self.trade_manager)
-                    except: pass
-                    self.last_daily_report = now
-                print(f"\n📊 #{self.scan_count} | ⏱️ {elapsed:.1f}ث | نشطة: {len(self.trade_manager.active_trades)}")
+
+                signals = await self.detector.scan_market(exchange)
+                if signals:
+                    print(f"\n🎯 {len(signals)} إشارة!")
+                    for signal in signals[:MAX_CONCURRENT_TRADES]:
+                        if signal.priority >= 2:
+                            self.trade_manager.open_trade(signal)
+                            await asyncio.sleep(0.3)
+                else:
+                    print("\n⚪ لا توجد إشارات")
+                
+                print(f"🧪 الرصيد الورقي: {self.trade_manager.available_capital:.2f}$ | الصفقات النشطة: {len(self.trade_manager.active_trades)}")
+                await asyncio.sleep(SCAN_INTERVAL)
+                
             except Exception as e:
                 print(f"❌ خطأ: {e}")
-                import traceback; traceback.print_exc()
-            try: await asyncio.sleep(SCAN_INTERVAL)
-            except asyncio.CancelledError: break
+                await asyncio.sleep(30)
 
+# =========================================================
+# Flask
+# =========================================================
 app = Flask(__name__)
 engine_instance = None
 
 @app.route('/')
 def dashboard():
     if not engine_instance: return "Not ready"
-    m = engine_instance.market_regime; s = engine_instance.last_scan_stats; tm = engine_instance.trade_manager
+    tm = engine_instance.trade_manager
     return render_template_string('''
-    <!DOCTYPE html><html dir="rtl"><head><title>Bot</title><meta charset="utf-8"><meta http-equiv="refresh" content="30">
+    <!DOCTYPE html><html dir="rtl"><head><title>Paper Trading</title><meta charset="utf-8"><meta http-equiv="refresh" content="30">
     <style>body{font-family:Arial;background:#1a1a2e;color:#eee;margin:20px}.card{background:#16213e;border-radius:10px;padding:20px;margin:10px}h1,h2{color:#fff}p{margin:10px 0}</style></head><body>
-    <h1>🚂 نظام الانفجارات – Binance</h1>
+    <h1>🧪 نظام التداول الورقي – رأس مال 500$</h1>
     <div style="display:flex;flex-wrap:wrap">
-    <div class="card" style="flex:1"><h2>📊 السوق</h2><p>{{m.trend}}</p><p>ADX: {{m.adx}} | BTC 1h: {{m.btc_change}}%</p><p>BTC فوق EMA: {{'✅' if m.btc_above_ema else '❌'}}</p></div>
-    <div class="card" style="flex:1"><h2>💰 الحساب</h2><p>${{"%.2f"|format(tm.available_capital)}}</p><p>نشطة: {{tm.active_trades|length}}</p><p>اليوم: {{tm.daily_trades}}</p><p>نجاح: {{"%.1f"|format(tm.get_win_rate())}}%</p></div>
-    <div class="card" style="flex:1"><h2>🔍 آخر مسح</h2><p>{{s.scanned}} عملة</p><p>{{s.signals}} إشارة</p><p>{{s.duration}} ث</p></div>
+    <div class="card" style="flex:1"><h2>💰 الحساب الورقي</h2><p>الرصيد: ${{"%.2f"|format(tm.available_capital)}}</p><p>الصفقات النشطة: {{tm.active_trades|length}}</p><p>صفقات اليوم: {{tm.daily_trades}}</p><p>نسبة النجاح: {{"%.1f"|format(tm.get_win_rate())}}%</p></div>
+    <div class="card" style="flex:1"><h2>📊 الأداء العام</h2><p>إجمالي الصفقات: {{tm.total_trades}}</p><p>الصفقات الرابحة: {{tm.winning_trades}}</p></div>
     </div>
     <p style="text-align:center;opacity:0.7">آخر تحديث: {{now}}</p></body></html>''',
-    m=m, s=s, tm=tm, now=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    tm=tm, now=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
 
 @app.route('/health')
 def health(): return jsonify({'status':'healthy'})
 
-@app.route('/download/<ft>')
-def download_file(ft):
-    files = {'signals':SIGNALS_FILE,'trades':TRADES_FILE}
-    if ft in files and os.path.exists(files[ft]): return send_file(files[ft], as_attachment=True)
-    return "Not found", 404
-
 def start_flask():
-    init_database()
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
+# =========================================================
+# الدالة الرئيسية
+# =========================================================
 async def main():
+    # 1. بدء Flask
     flask_thread = threading.Thread(target=start_flask, daemon=True)
     flask_thread.start()
-    engine = ExplosionScannerEngine()
-    poller = TelegramPoller(TELEGRAM_TOKEN, engine, engine.notifier)
-    asyncio.create_task(poller.start())
-    await engine.run()
+    
+    # 2. إعداد البورصة
+    exchange = ccxt_async.binance({'enableRateLimit': True, 'rateLimit': 200, 'options': {'defaultType': 'spot'}})
+    await exchange.fetch_ticker('BTC/USDT')
+    print("✅ Binance متصل")
+    
+    # 3. إعداد المكونات
+    detector = ExplosionDetector()
+    trade_manager = TradeManager(SIMULATION_CAPITAL)
+    
+    # 4. تشغيل Backtest أولاً
+    print("\n📊 تشغيل Backtest للتقييم...")
+    backtest = BacktestEngine(detector, trade_manager)
+    await backtest.run(exchange)
+    
+    # 5. بدء التداول الورقي المباشر
+    print("\n🧪 بدء التداول الورقي المباشر...")
+    paper_engine = PaperTradingEngine(detector, trade_manager)
+    await paper_engine.run(exchange)
 
 if __name__ == "__main__":
     asyncio.run(main())

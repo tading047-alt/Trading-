@@ -1,5 +1,5 @@
-ccxt
-pandas
-pandas_ta
-backtrader
+ccxt>=4.0.0
+pandas>=2.0.0
+pandas_ta==0.3.14b0
+backtrader==1.9.78.123
 python-telegram-bot==20.6

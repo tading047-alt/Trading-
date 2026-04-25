@@ -9,105 +9,109 @@ from datetime import datetime
 TELEGRAM_TOKEN = '8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo'
 CHAT_ID = '5067771509'
 
-class FullMonthlyBacktester:
+class PortfolioEngine:
     def __init__(self):
         self.exchange = ccxt.binance({'enableRateLimit': True})
         self.bot = Bot(token=TELEGRAM_TOKEN)
-        self.all_trades = [] # لتخزين كل صفقة تمت في الشهر لـ 800 عملة
+        # إعدادات المحفظة
+        self.initial_wallet = 1000.0
+        self.current_wallet = 1000.0
+        self.position_size = 100.0  # دخول بـ 100$ لكل صفقة
+        self.target_pct = 0.03      # ربح 3%
+        self.stop_pct = 0.03        # خسارة 3%
+        # قائمة الاستبعاد (العملات المستقرة والقيادية)
+        self.blacklist = ['BTC/USDT', 'ETH/USDT', 'USDC/USDT', 'DAI/USDT', 'FDUSD/USDT', 'USDT/USDT']
 
-    def get_indicators(self, df):
-        # حساب المؤشرات: BB, RSI, ATR, EMA
-        df['sma20'] = df['c'].rolling(20).mean()
-        df['std'] = df['c'].rolling(20).std()
-        df['bw'] = (df['std'] * 4) / df['sma20']
+    def apply_indicators(self, df):
+        # حساب RSI و ATR و Bollinger Bands و EMA 200
         delta = df['c'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         df['rsi'] = 100 - (100 / (1 + (gain/loss)))
-        df['tr'] = np.maximum(df['h'] - df['l'], np.maximum(abs(df['h'] - df['c'].shift(1)), abs(df['l'] - df['c'].shift(1))))
-        df['atr'] = df['tr'].rolling(14).mean()
-        df['ema50'] = df['c'].ewm(span=50).mean()
+        df['atr'] = df['c'].rolling(14).std() # تبسيط للتذبذب
         df['ema200'] = df['c'].ewm(span=200).mean()
+        df['sma20'] = df['c'].rolling(20).mean()
+        df['std'] = df['c'].rolling(20).std()
+        df['bw'] = (df['std'] * 4) / df['sma20']
         return df
 
     def get_score(self, df, i):
         score = 0
-        if df['bw'].iloc[i] < df['bw'].iloc[max(0, i-100):i].min() * 1.2: score += 20
-        if df['c'].iloc[i] > df['ema50'].iloc[i] > df['ema200'].iloc[i]: score += 20
-        if 50 < df['rsi'].iloc[i] < 70: score += 20
-        if df['v'].iloc[i] > df['v'].iloc[max(0, i-20):i].mean() * 2.5: score += 20
-        if df['h'].iloc[i-2] < df['l'].iloc[i]: score += 20
+        if df['bw'].iloc[i] < df['bw'].iloc[max(0, i-50):i].min() * 1.1: score += 20 # Squeeze
+        if df['c'].iloc[i] > df['ema200'].iloc[i]: score += 20                      # Trend
+        if 50 < df['rsi'].iloc[i] < 70: score += 20                                # Momentum
+        if df['v'].iloc[i] > df['v'].iloc[max(0, i-20):i].mean() * 2: score += 20    # Volume
+        if df['h'].iloc[i-2] < df['l'].iloc[i]: score += 20                         # FVG
         return score
 
-    async def backtest_symbol(self, symbol):
+    async def test_symbol(self, symbol):
+        if any(x in symbol for x in self.blacklist): return []
         try:
-            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe='1h', limit=740)
+            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe='1h', limit=720) # شهر
             df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-            df = self.get_indicators(df)
+            df = self.apply_indicators(df)
             
             symbol_trades = []
-            for i in range(100, len(df) - 24):
+            for i in range(50, len(df) - 24):
                 if self.get_score(df, i) >= 80:
-                    entry_time = datetime.fromtimestamp(df['t'].iloc[i]/1000).strftime('%Y-%m-%d %H:%M')
-                    entry_price = df['c'].iloc[i]
-                    tp = entry_price + (df['atr'].iloc[i] * 2.5)
-                    sl = entry_price - (df['atr'].iloc[i] * 1.5)
+                    entry_p = df['c'].iloc[i]
+                    tp = entry_p * (1 + self.target_pct)
+                    sl = entry_p * (1 - self.stop_pct)
                     
-                    result = "Pending"
                     for j in range(i + 1, min(i + 48, len(df))):
                         if df['h'].iloc[j] >= tp:
-                            result = "WIN"
+                            symbol_trades.append({'time': df['t'].iloc[i], 'res': 'WIN', 'pnl': self.position_size * 0.03, 'sym': symbol})
                             i = j; break
                         if df['l'].iloc[j] <= sl:
-                            result = "LOSS"
+                            symbol_trades.append({'time': df['t'].iloc[i], 'res': 'LOSS', 'pnl': -self.position_size * 0.03, 'sym': symbol})
                             i = j; break
-                    
-                    if result != "Pending":
-                        symbol_trades.append({
-                            'Time': entry_time,
-                            'Symbol': symbol,
-                            'Result': result,
-                            'Entry': entry_price,
-                            'Score': self.get_score(df, i)
-                        })
             return symbol_trades
         except: return []
 
-    async def run_full_test(self):
-        await self.bot.send_message(chat_id=CHAT_ID, text="📊 بدأ استخراج تقرير جميع الصفقات لـ 800 عملة (آخر 30 يوماً)...")
+    async def run_simulation(self):
+        await self.bot.send_message(chat_id=CHAT_ID, text="📊 بدأت محاكاة المحفظة المحتملة...\n💰 رأس المال: 1000$ | الصفقة: 100$\n⏳ جاري فحص 800 عملة لمدة شهر...")
         
         markets = self.exchange.load_markets()
         symbols = [s for s in markets if '/USDT' in s and markets[s]['active']][:800]
         
-        total_results = []
-        for i in range(0, len(symbols), 40):
-            batch = symbols[i:i+40]
-            tasks = [self.backtest_symbol(sym) for sym in batch]
-            res = await asyncio.gather(*tasks)
-            for r in res: total_results.extend(r)
-            print(f"تمت معالجة {min(i+40, 800)} عملة...")
+        all_potential_trades = []
+        for i in range(0, len(symbols), 50):
+            batch = symbols[i:i+50]
+            tasks = [self.test_symbol(sym) for sym in batch]
+            results = await asyncio.gather(*tasks)
+            for r in results: all_potential_trades.extend(r)
             await asyncio.sleep(1)
 
-        if total_results:
-            df_trades = pd.DataFrame(total_results)
-            wins = len(df_trades[df_trades['Result'] == 'WIN'])
-            losses = len(df_trades[df_trades['Result'] == 'LOSS'])
-            win_rate = (wins / (wins + losses)) * 100
+        if all_potential_trades:
+            # ترتيب كافة الصفقات من جميع العملات حسب وقت حدوثها
+            df_all = pd.DataFrame(all_potential_trades).sort_values(by='time')
             
-            filename = "Global_Monthly_Backtest.csv"
-            df_trades.to_csv(filename, index=False)
+            history = []
+            for _, trade in df_all.iterrows():
+                self.current_wallet += trade['pnl']
+                history.append({
+                    'Time': datetime.fromtimestamp(trade['time']/1000).strftime('%Y-%m-%d %H:%M'),
+                    'Symbol': trade['sym'],
+                    'Result': trade['res'],
+                    'PnL_USD': trade['pnl'],
+                    'Wallet_Balance': self.current_wallet
+                })
+
+            df_history = pd.DataFrame(history)
+            df_history.to_csv("Portfolio_Backtest_Results.csv", index=False)
             
+            total_profit_pct = ((self.current_wallet - self.initial_wallet) / self.initial_wallet) * 100
             summary = (
-                f"✅ **نتيجة الـ Backtesting لجميع العملات (شهر):**\n\n"
-                f"🔹 إجمالي الصفقات المكتشفة: {len(df_trades)}\n"
-                f"✅ الصفقات الناجحة: {wins}\n"
-                f"❌ الصفقات الفاشلة: {losses}\n"
-                f"📈 نسبة النجاح الكلية: {win_rate:.2f}%\n\n"
-                f"📂 تم إرفاق ملف بجميع الصفقات التفصيلية."
+                f"🏁 **تقرير المحاكاة الشهرية النهائي:**\n\n"
+                f"💵 الرصيد النهائي: {self.current_wallet:.2f}$\n"
+                f"📈 العائد الإجمالي: {total_profit_pct:.2f}%\n"
+                f"✅ عدد الصفقات الرابحة: {len(df_history[df_history['Result']=='WIN'])}\n"
+                f"❌ عدد الصفقات الخاسرة: {len(df_history[df_history['Result']=='LOSS'])}\n"
+                f"⚖️ نسبة النجاح: {(len(df_history[df_history['Result']=='WIN'])/len(df_history)*100):.2f}%"
             )
             await self.bot.send_message(chat_id=CHAT_ID, text=summary, parse_mode='Markdown')
-            with open(filename, 'rb') as f:
+            with open("Portfolio_Backtest_Results.csv", 'rb') as f:
                 await self.bot.send_document(chat_id=CHAT_ID, document=f)
 
 if __name__ == "__main__":
-    asyncio.run(FullMonthlyBacktester().run_full_test())
+    asyncio.run(PortfolioEngine().run_simulation())

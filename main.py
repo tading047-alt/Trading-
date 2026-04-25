@@ -10,73 +10,88 @@ from datetime import datetime, timedelta
 TELEGRAM_TOKEN = '8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo'
 CHAT_ID = '5067771509'
 
-class SqueezeStrategy(bt.Strategy):
+class ProProScoringStrategy(bt.Strategy):
     params = (
-        ('stop_loss', 0.02),    # 2% وقف خسارة
-        ('take_profit', 0.04),  # 4% جني أرباح
+        ('sma_long', 200),      # فلتر الاتجاه العام
+        ('vol_factor', 2.0),    # فوليوم أكبر بمرتين من المتوسط
+        ('trailing_perc', 0.02),# وقف متحرك 2%
+        ('target_profit', 0.04),# هدف أولي 4% لرفع الوقف
     )
 
     def __init__(self):
+        # 1. المؤشرات الفنية
+        self.sma200 = bt.indicators.SMA(self.data.close, period=self.p.sma_long)
         self.bb = bt.indicators.BollingerBands(self.data.close, period=20, devfactor=2)
-        self.keltner = bt.indicators.ATR(self.data, period=20)
-        self.sma = bt.indicators.SMA(self.data.close, period=20)
+        self.atr = bt.indicators.ATR(self.data, period=20)
+        self.vol_avg = bt.indicators.SMA(self.data.volume, period=20)
+        self.rsi = bt.indicators.RSI(self.data.close, period=14)
         
-        self.entry_date = None
+        # 2. متغيرات تتبع الصفقة
         self.entry_price = None
-        self.exit_price = None
-        self.trade_status = "No_Trade" # لتوضيح هل ربحت أم خسرت
+        self.entry_date = None
+        self.max_price = 0
+        self.trade_status = "No_Trade"
+        self.final_score = 0
 
-    def notify_order(self, order):
-        if order.status in [order.Completed] and order.isbuy():
-            # تسجيل بيانات الدخول عند اكتمال أمر الشراء
-            self.entry_date = bt.num2date(order.executed.dt)
-            self.entry_price = order.executed.price
-            self.trade_status = "Open"
+    def calculate_score(self):
+        score = 0
+        # أ- فلتر الاتجاه: السعر فوق الـ 200 (قوي جداً)
+        if self.data.close[0] > self.sma200[0]: score += 30
+        # ب- انخناق البولنجر
+        if (self.bb.top[0] - self.bb.bot[0]) < (self.atr[0] * 1.5): score += 20
+        # ج- فوليوم انفجاري
+        if self.data.volume[0] > self.vol_avg[0] * self.p.vol_factor: score += 20
+        # د- قوة RSI (فوق الـ 50 يعني زخم صاعد)
+        if self.rsi[0] > 50: score += 15
+        # هـ- اختراق فعلي للبولنجر العلوي
+        if self.data.close[0] > self.bb.top[0]: score += 15
+        return score
 
     def next(self):
         if not self.position:
-            # شرط الدخول: اختراق الحد العلوي للبولنجر
-            if self.data.close[0] > self.bb.top[0]:
+            current_score = self.calculate_score()
+            # لا يدخل إلا إذا كان السكور قوي جداً (أكبر من 60)
+            if current_score >= 60:
                 self.buy()
+                self.entry_price = self.data.close[0]
+                self.max_price = self.data.close[0]
+                self.final_score = current_score
+                self.entry_date = bt.num2date(self.data.datetime[0])
+                self.trade_status = "Open"
         else:
-            # حساب مستويات الأهداف بناءً على سعر الدخول
-            sl_price = self.entry_price * (1.0 - self.p.stop_loss)
-            tp_price = self.entry_price * (1.0 + self.p.take_profit)
+            # تحديث أقصى سعر وصل له البوت لتفعيل الوقف المتحرك
+            self.max_price = max(self.max_price, self.data.high[0])
+            
+            # حساب الوقف المتحرك (Trailing Stop)
+            # إذا نزل السعر 2% من أعلى قمة وصل لها بعد الدخول
+            trailing_stop = self.max_price * (1.0 - self.p.trailing_perc)
+            
+            # شرط جني الأرباح (إذا حققنا 4% نرفع الوقف لنقطة الدخول فوراً)
+            if self.data.close[0] >= self.entry_price * (1.0 + self.p.target_profit):
+                trailing_stop = max(trailing_stop, self.entry_price * 1.01) # تأمين ربح 1%
 
-            # التحقق من ملامسة الأهداف (نختبر السعر الأدنى والأعلى للشمعة الحالية)
-            if self.data.low[0] <= sl_price:
+            if self.data.low[0] <= trailing_stop:
                 self.close()
-                self.exit_price = sl_price
-                self.trade_status = "Loss (-2%)"
-            elif self.data.high[0] >= tp_price:
-                self.close()
-                self.exit_price = tp_price
-                self.trade_status = "Win (+4%)"
-            # شرط خروج إضافي (اختياري): إذا كسر السعر المتوسط المتحرك قبل الأهداف
-            elif self.data.close[0] < self.sma[0]:
-                self.close()
-                self.exit_price = self.data.close[0]
-                self.trade_status = "Closed_by_SMA"
+                profit = (self.data.close[0] - self.entry_price) / self.entry_price
+                self.trade_status = "Win" if profit > 0 else "Loss"
 
-class CryptoScanner:
+class CryptoScannerPro:
     def __init__(self):
         self.exchange = ccxt.binance({'enableRateLimit': True})
 
     def run_backtest(self, symbol):
         try:
-            since = self.exchange.parse8601((datetime.now() - timedelta(days=30)).isoformat())
-            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe='1h', since=since)
-            if not ohlcv: return None
-
+            # نحتاج بيانات أكثر (500 شمعة) لحساب SMA 200 بدقة
+            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe='1h', limit=500)
             df = pd.DataFrame(ohlcv, columns=['datetime', 'open', 'high', 'low', 'close', 'volume'])
-            current_price = df['close'].iloc[-1]
+            df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
             
             cerebro = bt.Cerebro()
-            cerebro.addstrategy(SqueezeStrategy)
-            data = bt.feeds.PandasData(dataname=df.assign(datetime=pd.to_datetime(df['datetime'], unit='ms')).set_index('datetime'))
+            cerebro.addstrategy(ProProScoringStrategy)
+            data = bt.feeds.PandasData(dataname=df.set_index('datetime'))
             cerebro.adddata(data)
             cerebro.broker.setcash(1000.0)
-            cerebro.broker.setcommission(commission=0.001) # رسوم 0.1%
+            cerebro.broker.setcommission(commission=0.001)
 
             results = cerebro.run()
             strat = results[0]
@@ -84,51 +99,40 @@ class CryptoScanner:
 
             return {
                 'Symbol': symbol,
-                'Current_Price': current_price,
-                'Date_Entree': strat.entry_date.strftime('%Y-%m-%d') if strat.entry_date else "No_Breakout",
-                'Heure_Entree': strat.entry_date.strftime('%H:%M') if strat.entry_date else "--:--",
-                'Prix_Entree': round(strat.entry_price, 6) if strat.entry_price else 0,
-                'Prix_Sortie': round(strat.exit_price, 6) if strat.exit_price else 0,
-                'Status_Trade': strat.trade_status,
-                'Resultat_Net_%': profit
+                'Score': strat.final_score,
+                'Date': strat.entry_date.strftime('%Y-%m-%d') if strat.entry_date else "N/A",
+                'Status': strat.trade_status,
+                'Final_Profit_%': profit
             }
-        except Exception:
-            return None
-
-async def send_to_telegram(all_data):
-    file_path = "Detailed_Report_SL_TP.csv"
-    df = pd.DataFrame(all_data)
-    # ترتيب العملات التي حققت صفقات أولاً
-    df = df.sort_values(by='Resultat_Net_%', ascending=False)
-    df.to_csv(file_path, index=False)
-
-    wins = len(df[df['Status_Trade'] == "Win (+4%)"])
-    losses = len(df[df['Status_Trade'] == "Loss (-2%)"])
-
-    summary = f"🚀 تقرير الباكتيست (SL 2% / TP 4%)\n"
-    summary += f"📊 إجمالي العملات الممسوحة: {len(df)}\n"
-    summary += f"✅ صفقات رابحة: {wins}\n"
-    summary += f"❌ صفقات خاسرة: {losses}\n"
-    summary += f"🔝 أفضل ربح محقق: {df['Resultat_Net_%'].max()}%\n"
-
-    bot = Bot(token=TELEGRAM_TOKEN)
-    async with bot:
-        await bot.send_message(chat_id=CHAT_ID, text=summary)
-        with open(file_path, 'rb') as f:
-            await bot.send_document(chat_id=CHAT_ID, document=f, caption="التقرير التفصيلي لنتائج الصفقات 📄")
+        except: return None
 
 async def main():
-    scanner = CryptoScanner()
+    scanner = CryptoScannerPro()
     tickers = scanner.exchange.fetch_tickers()
     symbols = [s[0] for s in sorted(tickers.items(), key=lambda x: x[1].get('quoteVolume', 0), reverse=True) if '/USDT' in s[0]][:300]
     
-    results_list = []
-    for i, symbol in enumerate(symbols):
-        print(f"[{i+1}/300] Testing {symbol}...")
-        res = scanner.run_backtest(symbol)
-        if res: results_list.append(res)
+    print(f"🛠️ جاري تشغيل الاستراتيجية الاحترافية على 300 عملة...")
+    all_results = []
+    for i, sym in enumerate(symbols):
+        print(f"[{i+1}/300] Analyzing {sym}...")
+        res = scanner.run_backtest(sym)
+        if res: all_results.append(res)
     
-    await send_to_telegram(results_list)
+    df = pd.DataFrame(all_results).sort_values(by='Final_Profit_%', ascending=False)
+    df.to_csv("Pro_Strategy_Report.csv", index=False)
+    
+    # رسالة تلغرام
+    win_rate = len(df[df['Status'] == 'Win']) / len(df[df['Status'] != 'No_Trade']) * 100 if len(df[df['Status'] != 'No_Trade']) > 0 else 0
+    msg = f"🏆 تقرير الاستراتيجية المدمجة (Scoring + Trailing)\n\n"
+    msg += f"🔥 معدل الفوز (Win Rate): {round(win_rate, 2)}%\n"
+    msg += f"📊 صفقات رابحة: {len(df[df['Status'] == 'Win'])}\n"
+    msg += f"📉 صفقات خاسرة: {len(df[df['Status'] == 'Loss'])}\n"
+
+    bot = Bot(token=TELEGRAM_TOKEN)
+    async with bot:
+        await bot.send_message(chat_id=CHAT_ID, text=msg)
+        with open("Pro_Strategy_Report.csv", 'rb') as f:
+            await bot.send_document(chat_id=CHAT_ID, document=f, caption="النتائج الكاملة بنظام السكور والوقف المتحرك 📄")
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -4,7 +4,7 @@ from telegram import Bot
 
 # دالة محدثة لإرسال النص والملف معاً
 async def send_telegram_report_with_file(results_dict):
-    token = 'YOUR_TELEGRAM_TOKEN'
+    token = '8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo'
     chat_id = 'YOUR_CHAT_ID'
     bot = Bot(token=token)
     

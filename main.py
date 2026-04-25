@@ -9,109 +9,134 @@ from datetime import datetime
 TELEGRAM_TOKEN = '8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo'
 CHAT_ID = '5067771509'
 
-class PortfolioEngine:
+class ElitePortfolioEngine:
     def __init__(self):
         self.exchange = ccxt.binance({'enableRateLimit': True})
         self.bot = Bot(token=TELEGRAM_TOKEN)
-        # إعدادات المحفظة
-        self.initial_wallet = 1000.0
-        self.current_wallet = 1000.0
-        self.position_size = 100.0  # دخول بـ 100$ لكل صفقة
-        self.target_pct = 0.03      # ربح 3%
-        self.stop_pct = 0.03        # خسارة 3%
-        # قائمة الاستبعاد (العملات المستقرة والقيادية)
+        self.initial_balance = 1000.0
+        self.current_balance = 1000.0
+        self.trade_amount = 100.0
+        self.min_daily_volume = 15000000  # 15 مليون دولار كحد أدنى للسيولة
         self.blacklist = ['BTC/USDT', 'ETH/USDT', 'USDC/USDT', 'DAI/USDT', 'FDUSD/USDT', 'USDT/USDT']
 
-    def apply_indicators(self, df):
-        # حساب RSI و ATR و Bollinger Bands و EMA 200
-        delta = df['c'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        df['rsi'] = 100 - (100 / (1 + (gain/loss)))
-        df['atr'] = df['c'].rolling(14).std() # تبسيط للتذبذب
+    async def get_btc_status(self):
+        """التحقق من صحة السوق عبر البيتكوين"""
+        try:
+            ohlcv = self.exchange.fetch_ohlcv('BTC/USDT', timeframe='1h', limit=200)
+            df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
+            ema200 = df['c'].ewm(span=200).mean().iloc[-1]
+            # السوق آمن إذا كان BTC فوق EMA 200
+            return df['c'].iloc[-1] > ema200, df['c'].pct_change(24).iloc[-1] * 100
+        except: return False, 0
+
+    def calculate_indicators(self, df):
+        # حساب المؤشرات الأساسية
         df['ema200'] = df['c'].ewm(span=200).mean()
         df['sma20'] = df['c'].rolling(20).mean()
         df['std'] = df['c'].rolling(20).std()
         df['bw'] = (df['std'] * 4) / df['sma20']
+        # RSI
+        delta = df['c'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        df['rsi'] = 100 - (100 / (1 + (gain/loss)))
+        # ATR
+        df['tr'] = np.maximum(df['h'] - df['l'], np.maximum(abs(df['h'] - df['c'].shift(1)), abs(df['l'] - df['c'].shift(1))))
+        df['atr'] = df['tr'].rolling(14).mean()
         return df
 
-    def get_score(self, df, i):
+    def get_elite_score(self, df, i, btc_24h_change):
         score = 0
-        if df['bw'].iloc[i] < df['bw'].iloc[max(0, i-50):i].min() * 1.1: score += 20 # Squeeze
-        if df['c'].iloc[i] > df['ema200'].iloc[i]: score += 20                      # Trend
-        if 50 < df['rsi'].iloc[i] < 70: score += 20                                # Momentum
-        if df['v'].iloc[i] > df['v'].iloc[max(0, i-20):i].mean() * 2: score += 20    # Volume
-        if df['h'].iloc[i-2] < df['l'].iloc[i]: score += 20                         # FVG
+        # 1. القوة النسبية (العملة أقوى من البيتكوين)
+        coin_24h_change = (df['c'].iloc[i] - df['c'].iloc[max(0, i-24)]) / df['c'].iloc[max(0, i-24)] * 100
+        if coin_24h_change > btc_24h_change: score += 20
+        
+        # 2. انضغاط البولنجر (Squeeze)
+        if df['bw'].iloc[i] < df['bw'].iloc[max(0, i-100):i].min() * 1.15: score += 20
+        
+        # 3. الزخم الإيجابي (RSI)
+        if 50 < df['rsi'].iloc[i] < 68: score += 20
+        
+        # 4. الاتجاه الصاعد (Above EMA 200)
+        if df['c'].iloc[i] > df['ema200'].iloc[i]: score += 20
+        
+        # 5. دخول سيولة (Volume Spike)
+        if df['v'].iloc[i] > df['v'].iloc[max(0, i-20):i].mean() * 2.5: score += 20
+        
         return score
 
-    async def test_symbol(self, symbol):
+    async def backtest_symbol(self, symbol, btc_safe, btc_24h):
         if any(x in symbol for x in self.blacklist): return []
         try:
-            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe='1h', limit=720) # شهر
+            # جلب البيانات
+            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe='1h', limit=720)
             df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-            df = self.apply_indicators(df)
             
-            symbol_trades = []
+            # فلتر السيولة: استبعاد العملات الضعيفة برمجياً
+            if (df['v'].iloc[-1] * df['c'].iloc[-1]) < self.min_daily_volume: return []
+            
+            df = self.calculate_indicators(df)
+            trades = []
+            
             for i in range(50, len(df) - 24):
-                if self.get_score(df, i) >= 80:
+                # شرط السكور 90 + شرط أمان البيتكوين
+                if self.get_elite_score(df, i, btc_24h) >= 90 and btc_safe:
                     entry_p = df['c'].iloc[i]
-                    tp = entry_p * (1 + self.target_pct)
-                    sl = entry_p * (1 - self.stop_pct)
+                    tp = entry_p * 1.03
+                    sl = entry_p * 0.97
                     
                     for j in range(i + 1, min(i + 48, len(df))):
                         if df['h'].iloc[j] >= tp:
-                            symbol_trades.append({'time': df['t'].iloc[i], 'res': 'WIN', 'pnl': self.position_size * 0.03, 'sym': symbol})
+                            trades.append({'time': df['t'].iloc[i], 'res': 'WIN', 'pnl': 3.0, 'sym': symbol})
                             i = j; break
                         if df['l'].iloc[j] <= sl:
-                            symbol_trades.append({'time': df['t'].iloc[i], 'res': 'LOSS', 'pnl': -self.position_size * 0.03, 'sym': symbol})
+                            trades.append({'time': df['t'].iloc[i], 'res': 'LOSS', 'pnl': -3.0, 'sym': symbol})
                             i = j; break
-            return symbol_trades
+            return trades
         except: return []
 
-    async def run_simulation(self):
-        await self.bot.send_message(chat_id=CHAT_ID, text="📊 بدأت محاكاة المحفظة المحتملة...\n💰 رأس المال: 1000$ | الصفقة: 100$\n⏳ جاري فحص 800 عملة لمدة شهر...")
+    async def run_elite_simulation(self):
+        await self.bot.send_message(chat_id=CHAT_ID, text="🏆 إطلاق محاكي 'النخبة' (Score 90+)...\n🛡️ تم تفعيل فلاتر البيتكوين والسيولة والقوة النسبية.")
         
+        btc_safe, btc_24h = await self.get_btc_status()
         markets = self.exchange.load_markets()
         symbols = [s for s in markets if '/USDT' in s and markets[s]['active']][:800]
         
-        all_potential_trades = []
+        all_trades = []
         for i in range(0, len(symbols), 50):
             batch = symbols[i:i+50]
-            tasks = [self.test_symbol(sym) for sym in batch]
+            tasks = [self.backtest_symbol(sym, btc_safe, btc_24h) for sym in batch]
             results = await asyncio.gather(*tasks)
-            for r in results: all_potential_trades.extend(r)
+            for r in results: all_trades.extend(r)
             await asyncio.sleep(1)
 
-        if all_potential_trades:
-            # ترتيب كافة الصفقات من جميع العملات حسب وقت حدوثها
-            df_all = pd.DataFrame(all_potential_trades).sort_values(by='time')
+        if all_trades:
+            df_trades = pd.DataFrame(all_trades).sort_values(by='time')
             
-            history = []
-            for _, trade in df_all.iterrows():
-                self.current_wallet += trade['pnl']
-                history.append({
-                    'Time': datetime.fromtimestamp(trade['time']/1000).strftime('%Y-%m-%d %H:%M'),
-                    'Symbol': trade['sym'],
-                    'Result': trade['res'],
-                    'PnL_USD': trade['pnl'],
-                    'Wallet_Balance': self.current_wallet
-                })
-
-            df_history = pd.DataFrame(history)
-            df_history.to_csv("Portfolio_Backtest_Results.csv", index=False)
+            for _, trade in df_trades.iterrows():
+                # محاكاة الربح بالدولار من الـ 100$
+                self.current_balance += (self.trade_amount * (trade['pnl'] / 100))
             
-            total_profit_pct = ((self.current_wallet - self.initial_wallet) / self.initial_wallet) * 100
+            wins = len(df_trades[df_trades['res'] == 'WIN'])
+            losses = len(df_trades[df_trades['res'] == 'LOSS'])
+            win_rate = (wins / len(df_trades)) * 100
+            
+            filename = "Elite_90_Backtest.csv"
+            df_trades.to_csv(filename, index=False)
+            
             summary = (
-                f"🏁 **تقرير المحاكاة الشهرية النهائي:**\n\n"
-                f"💵 الرصيد النهائي: {self.current_wallet:.2f}$\n"
-                f"📈 العائد الإجمالي: {total_profit_pct:.2f}%\n"
-                f"✅ عدد الصفقات الرابحة: {len(df_history[df_history['Result']=='WIN'])}\n"
-                f"❌ عدد الصفقات الخاسرة: {len(df_history[df_history['Result']=='LOSS'])}\n"
-                f"⚖️ نسبة النجاح: {(len(df_history[df_history['Result']=='WIN'])/len(df_history)*100):.2f}%"
+                f"✅ **نتيجة محاكاة النخبة (Score 90):**\n\n"
+                f"💰 الرصيد النهائي: {self.current_balance:.2f}$\n"
+                f"📈 العائد الصافي: {((self.current_balance-1000)/1000)*100:.2f}%\n"
+                f"🎯 عدد الصفقات: {len(df_trades)}\n"
+                f"✅ ربح: {wins} | ❌ خسارة: {losses}\n"
+                f"⚖️ نسبة النجاح: {win_rate:.2f}%"
             )
             await self.bot.send_message(chat_id=CHAT_ID, text=summary, parse_mode='Markdown')
-            with open("Portfolio_Backtest_Results.csv", 'rb') as f:
+            with open(filename, 'rb') as f:
                 await self.bot.send_document(chat_id=CHAT_ID, document=f)
+        else:
+            await self.bot.send_message(chat_id=CHAT_ID, text="⚠️ لم يتم العثور على أي صفقات تحقق معايير النخبة (90+) في الشهر الماضي.")
 
 if __name__ == "__main__":
-    asyncio.run(PortfolioEngine().run_simulation())
+    asyncio.run(ElitePortfolioEngine().run_elite_simulation())

@@ -5,8 +5,8 @@
 First Station Explosion Detector - Final Edition
 
 التفعيل:
-✅ TRADING_MODE=live     → تداول حي (افتراضي)
-✅ TRADING_MODE=backtest → اختبار عكسي لآخر 7 أيام
+✅ /live     → تداول حي (افتراضي)
+✅ /backtest → اختبار عكسي لآخر 7 أيام
 ✅ بدون أي input() - يعمل تلقائياً على Railway
 
 التحسينات المتكاملة:
@@ -22,7 +22,7 @@ First Station Explosion Detector - Final Edition
 ✅ وقف خسارة -2.0%
 ✅ خروج مبكر (شمعة هبوط، تقاطع EMA، كسر دعم)
 ✅ إشعارات تليجرام كاملة
-✅ أوامر تفاعلية (/open, /closed, /stats, /download, /status, /help)
+✅ أوامر تفاعلية (/open, /closed, /stats, /download, /status, /help, /live, /backtest)
 ✅ تسجيل CSV + قاعدة بيانات SQLite
 ✅ لوحة تحكم ويب
 ✅ نبضات قلب كل ساعتين + تقرير يومي
@@ -41,8 +41,8 @@ import ccxt.async_support as ccxt_async
 # =========================================================
 # إعدادات تليجرام
 # =========================================================
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "5067771509")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
 BOT_TAG = "#BinanceBot"
 
 # =========================================================
@@ -481,9 +481,9 @@ class BacktestEngine:
 class EnhancedExplosionNotifier:
     def __init__(self):
         self.tg_token = TELEGRAM_TOKEN; self.tg_chat = TELEGRAM_CHAT_ID
-    async def send_open_trade_alert(self, s, cap):
-        pat="\n".join(f"  • {p}" for p in s.patterns)
-        msg=f"""🔴 *فتح صفقة*\n{BOT_TAG}\n🪙 *{s.symbol}*\n💵 {s.entry_price:.8f}\n💰 {cap:.2f}$\n📊 {s.confidence:.1f}%\n📈 +{s.expected_move:.1f}%\n🎯 أولوية {s.priority}/5\n📋:\n{pat}\n🕐 `{datetime.now().strftime('%H:%M:%S')}`"""
+    async def send_open_trade_alert(self, signal, capital):
+        pat="\n".join(f"  • {p}" for p in signal.patterns)
+        msg=f"""🔴 *فتح صفقة*\n{BOT_TAG}\n🪙 *{signal.symbol}*\n💵 {signal.entry_price:.8f}\n💰 {capital:.2f}$\n📊 {signal.confidence:.1f}%\n📈 +{signal.expected_move:.1f}%\n🎯 أولوية {signal.priority}/5\n📋:\n{pat}\n🕐 `{datetime.now().strftime('%H:%M:%S')}`"""
         await self._send(msg)
     async def send_trade_closed_alert(self, r, avail):
         emoji="💰" if r['pnl_pct']>0 else "📉"
@@ -504,6 +504,10 @@ class EnhancedExplosionNotifier:
         base=os.environ.get("RENDER_EXTERNAL_URL","http://localhost:8080")
         msg=f"""📁 *روابط CSV*\n{BOT_TAG}\n• [الإشارات]({base}/download/signals)\n• [الصفقات]({base}/download/trades)"""
         await self._send_to(chat_id, msg)
+    async def send_mode_changed(self, mode: str):
+        emoji = "🟢" if mode == "live" else "📊"
+        msg = f"""{emoji} *تم تغيير الوضع*\n{BOT_TAG}\n\nالوضع الحالي: {mode}\n\n🔄 جاري إعادة التشغيل...\n🕐 `{datetime.now().strftime('%H:%M:%S')}`"""
+        await self._send(msg)
     async def _send(self, msg): await self._send_to(self.tg_chat, msg)
     async def _send_to(self, chat_id, msg):
         try:
@@ -513,7 +517,7 @@ class EnhancedExplosionNotifier:
         except Exception as e: print(f"⚠️ تليجرام: {e}")
 
 # =========================================================
-# مستمع أوامر تليجرام
+# مستمع أوامر تليجرام (مع /live و /backtest)
 # =========================================================
 class TelegramPoller:
     def __init__(self, token, engine, notifier):
@@ -532,13 +536,23 @@ class TelegramPoller:
                             self.last_update_id=upd["update_id"]
                             msg=upd.get("message")
                             if msg and "text" in msg:
-                                text=msg["text"].strip(); chat_id=msg["chat"]["id"]
+                                text=msg["text"].strip().lower(); chat_id=msg["chat"]["id"]
                                 if text=="/status": await self._status(chat_id)
                                 elif text=="/download": await self.notifier.send_csv_links(chat_id)
                                 elif text=="/open": await self._open(chat_id)
                                 elif text=="/closed": await self._closed(chat_id)
                                 elif text=="/stats": await self._stats(chat_id)
-                                elif text=="/help": await self._send(chat_id,"/status /open /closed /stats /download /help")
+                                elif text=="/live":
+                                    await self.notifier.send_mode_changed("live")
+                                    await self._send(chat_id, "🔄 جاري إعادة التشغيل في وضع Live...")
+                                    os.environ["TRADING_MODE"] = "live"
+                                    os._exit(0)
+                                elif text=="/backtest":
+                                    await self.notifier.send_mode_changed("backtest")
+                                    await self._send(chat_id, "🔄 جاري إعادة التشغيل في وضع Backtesting...")
+                                    os.environ["TRADING_MODE"] = "backtest"
+                                    os._exit(0)
+                                elif text=="/help": await self._send(chat_id, "/status /open /closed /stats /download /live /backtest /help")
                                 else: await self._send(chat_id,"❌ /help")
             except: pass
             await asyncio.sleep(1)

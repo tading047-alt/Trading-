@@ -6,4 +6,6 @@ aiofiles
 flask
 requests
 backtrader
-telegram-bot
+python-telegram-bot==20.6
+
+

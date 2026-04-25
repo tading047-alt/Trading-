@@ -1,28 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🚂 نظام اختبار الاستراتيجيات المتعدد – Backtesting شهري مع تحليلات متقدمة
-First Station Multi-Strategy Backtesting Engine - Advanced Analytics
-
-التحليلات الجديدة:
-✅ أقصى انخفاض للمحفظة (Max Drawdown) خلال الفترة
-✅ أفضل صفقة (الربح + المدة)
-✅ أسوأ صفقة (الخسارة + المدة)
-✅ متوسط مدة الصفقات لكل استراتيجية
-✅ استبعاد العملات المستقرة والعملات الكبيرة
-✅ 6 استراتيجيات مختلفة في تشغيل واحد
-✅ Backtesting على شهر كامل (30 يوم)
-✅ إشعار تليجرام بنتائج كل استراتيجية + ترتيب نهائي
-✅ فريمات زمنية متعددة (3m, 5m, 15m)
-✅ فلتر EMA + فلتر حجم إضافي + فلتر وقت التداول
+🚂 استراتيجية ذهبية محسنة – Backtesting شهري
 """
 
-import asyncio, threading, pandas as pd, numpy as np, httpx, json, os, time
+import asyncio, pandas as pd, numpy as np, httpx, json, os, time
 from datetime import datetime, timedelta
 from collections import deque
-from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Any
-
 import ccxt.async_support as ccxt_async
 
 # =========================================================
@@ -30,78 +15,47 @@ import ccxt.async_support as ccxt_async
 # =========================================================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
-BOT_TAG = "#MultiTest"
+BOT_TAG = "#OptimizedTest"
 
 # =========================================================
 # 🎯 العملات المستبعدة
 # =========================================================
-EXCLUDED_STABLECOINS = ['USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'FDUSD', 'USDD', 'GUSD', 'LUSD', 'SUSD']
-EXCLUDED_LARGE_CAPS = ['BTC', 'ETH', 'BNB', 'XRP', 'SOL', 'ADA', 'AVAX', 'DOT', 'MATIC', 'LINK', 'UNI', 'ATOM', 'LTC', 'ETC', 'XLM', 'BCH']
+EXCLUDED_STABLECOINS = ['USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'FDUSD']
+EXCLUDED_LARGE_CAPS = ['BTC', 'ETH', 'BNB', 'XRP', 'SOL', 'ADA', 'AVAX', 'DOT']
 EXCLUDED_LEVERAGED = ['3S', '3L', '5S', '5L', 'X3', 'X5', 'BEAR', 'BULL', 'UP', 'DOWN']
-
 ALL_EXCLUDED = EXCLUDED_STABLECOINS + EXCLUDED_LARGE_CAPS
 
 def is_excluded(symbol: str) -> bool:
-    """التحقق من استبعاد العملة"""
     base = symbol.split('/')[0]
     if base in ALL_EXCLUDED: return True
     if any(lev in base for lev in EXCLUDED_LEVERAGED): return True
     return False
 
 # =========================================================
-# 📊 الاستراتيجيات الستة للاختبار (مع التحسينات)
+# 🎯 الإعدادات المحسنة (وسط بين الذهبية والمتوازنة)
 # =========================================================
-STRATEGIES = {
-    "الذهبية_المحسنة": {
-        'MIN_CONFIDENCE': 75, 'MIN_PATTERNS_REQUIRED': 2,
-        'MIN_VOLUME_24H': 150000, 'MAX_SPREAD': 0.2,
-        'TAKE_PROFIT': 3.5, 'STOP_LOSS': -1.5,
-        'TRAILING_ACTIVATION': 1.5, 'TRAILING_DISTANCE': 0.5,
-        'PARTIAL_SELL': True, 'PARTIAL_SELL_RATIO': 0.5,
-        'MIN_VOLUME_RATIO': 1.5, 'REQUIRE_EMA_ALIGNMENT': True,
-        'BEST_HOURS': [8, 9, 10, 13, 14, 15, 16],
-        'MAX_CONSECUTIVE_LOSSES': 1
-    },
-    "المحافظة": {
-        'MIN_CONFIDENCE': 80, 'MIN_PATTERNS_REQUIRED': 3,
-        'MIN_VOLUME_24H': 200000, 'MAX_SPREAD': 0.15,
-        'TAKE_PROFIT': 3.0, 'STOP_LOSS': -1.5,
-        'TRAILING_ACTIVATION': 2.0, 'TRAILING_DISTANCE': 0.5
-    },
-    "المتوازنة": {
-        'MIN_CONFIDENCE': 70, 'MIN_PATTERNS_REQUIRED': 2,
-        'MIN_VOLUME_24H': 100000, 'MAX_SPREAD': 0.25,
-        'TAKE_PROFIT': 5.0, 'STOP_LOSS': -2.0,
-        'TRAILING_ACTIVATION': 2.5, 'TRAILING_DISTANCE': 1.0
-    },
-    "الهجومية": {
-        'MIN_CONFIDENCE': 55, 'MIN_PATTERNS_REQUIRED': 1,
-        'MIN_VOLUME_24H': 50000, 'MAX_SPREAD': 0.4,
-        'TAKE_PROFIT': 8.0, 'STOP_LOSS': -3.0,
-        'TRAILING_ACTIVATION': 3.0, 'TRAILING_DISTANCE': 1.5
-    },
-    "السريعة": {
-        'MIN_CONFIDENCE': 65, 'MIN_PATTERNS_REQUIRED': 2,
-        'MIN_VOLUME_24H': 75000, 'MAX_SPREAD': 0.3,
-        'TAKE_PROFIT': 4.0, 'STOP_LOSS': -1.75,
-        'TRAILING_ACTIVATION': 1.5, 'TRAILING_DISTANCE': 0.3
-    },
-    "صائد_الانفجارات": {
-        'MIN_CONFIDENCE': 60, 'MIN_PATTERNS_REQUIRED': 2,
-        'MIN_VOLUME_24H': 80000, 'MAX_SPREAD': 0.35,
-        'TAKE_PROFIT': 6.0, 'STOP_LOSS': -2.5,
-        'TRAILING_ACTIVATION': 3.0, 'TRAILING_DISTANCE': 0.8
-    }
+SETTINGS = {
+    'MIN_CONFIDENCE': 68,
+    'MIN_PATTERNS_REQUIRED': 2,
+    'MIN_VOLUME_24H': 100000,
+    'MAX_SPREAD': 0.3,
+    'TAKE_PROFIT': 3.5,
+    'STOP_LOSS': -1.5,
+    'TRAILING_ACTIVATION': 1.5,
+    'TRAILING_DISTANCE': 0.5,
+    'PARTIAL_SELL': True,
+    'PARTIAL_SELL_RATIO': 0.5,
+    'MIN_VOLUME_RATIO': 1.2,
+    'CAPITAL_PER_TRADE_RATIO': 0.1,  # 👈 10% فقط من الرصيد
+    'MAX_CAPITAL_PER_TRADE': 100.0,   # 👈 أقصى مبلغ 100$
 }
 
-# =========================================================
-# 🎯 الإعدادات المشتركة
-# =========================================================
 SIMULATION_CAPITAL = 500.0
-BACKTEST_DAYS = 30  # شهر كامل
+BACKTEST_DAYS = 30
 
-ALLOWED_PATTERNS = ['whale_accumulation', 'calm_before_storm', 'bollinger_squeeze']
 PATTERN_WEIGHTS = {'calm_before_storm': 45, 'whale_accumulation': 55, 'bollinger_squeeze': 40}
+VOLUME_RATIO_THRESHOLD = 1.2
+RSI_MAX = 72
 
 # =========================================================
 # دوال تليجرام
@@ -115,22 +69,11 @@ async def send_telegram(text: str):
     except: pass
 
 # =========================================================
-# كاشف الإشارات (بإعدادات متغيرة)
+# كاشف مبسط
 # =========================================================
-class FlexibleDetector:
-    def __init__(self, settings: dict):
-        self.settings = settings
+class SimpleDetector:
+    def __init__(self):
         self.pattern_weights = PATTERN_WEIGHTS
-
-    def should_enter_time(self) -> bool:
-        if 'BEST_HOURS' not in self.settings: return True
-        return datetime.now().hour in self.settings['BEST_HOURS']
-
-    def check_ema_alignment(self, closes: np.ndarray) -> bool:
-        if len(closes) < 22: return True
-        ema9 = pd.Series(closes).ewm(span=9, adjust=False).mean().values[-1]
-        ema21 = pd.Series(closes).ewm(span=21, adjust=False).mean().values[-1]
-        return ema9 > ema21
 
     async def get_symbols(self, exchange, limit=150):
         tickers = await exchange.fetch_tickers()
@@ -139,32 +82,24 @@ class FlexibleDetector:
             if not sym or not sym.endswith('/USDT'): continue
             if is_excluded(sym): continue
             vol = t.get('quoteVolume') or 0
-            if vol < self.settings['MIN_VOLUME_24H']: continue
+            if vol < SETTINGS['MIN_VOLUME_24H']: continue
             ch = t.get('percentage') or 0
             if ch > 20 or ch < -10: continue
             bid = t.get('bid') or 0; ask = t.get('ask') or 0
-            if bid > 0 and ask > 0 and (ask-bid)/bid*100 > self.settings['MAX_SPREAD']: continue
+            if bid > 0 and ask > 0 and (ask-bid)/bid*100 > SETTINGS['MAX_SPREAD']: continue
             active.append(sym)
         active.sort(key=lambda s: tickers[s].get('quoteVolume') or 0, reverse=True)
         return active[:limit]
 
-    def analyze(self, ohlcv: np.ndarray, volume_24h: float, current_price: float, current_time=None) -> Optional[Dict]:
+    def analyze(self, ohlcv: np.ndarray) -> Optional[Dict]:
         if len(ohlcv) < 30: return None
         closes = ohlcv[:, 4]; volumes = ohlcv[:, 5]
         
-        # فلتر الوقت
-        if not self.should_enter_time(): return None
+        avg_vol = np.mean(volumes[-20:]) if len(volumes)>=20 else volumes[-1]
+        if volumes[-1] / avg_vol < VOLUME_RATIO_THRESHOLD: return None
         
-        # فلتر حجم إضافي
-        if 'MIN_VOLUME_RATIO' in self.settings:
-            avg_vol = np.mean(volumes[-20:]) if len(volumes)>=20 else volumes[-1]
-            if volumes[-1] / avg_vol < self.settings['MIN_VOLUME_RATIO']: return None
-        
-        # فلتر EMA
-        if self.settings.get('REQUIRE_EMA_ALIGNMENT', False):
-            if not self.check_ema_alignment(closes): return None
-        
-        if self._calc_rsi(closes) > 72: return None
+        rsi = self._calc_rsi(closes)
+        if rsi > RSI_MAX: return None
         
         detected = []; total_conf = 0
         for check in [self._check_calm(closes, volumes), self._check_whale(closes, volumes), self._check_boll(closes)]:
@@ -172,9 +107,8 @@ class FlexibleDetector:
                 detected.append(check['name'])
                 total_conf += self.pattern_weights.get(check.get('pn',''), 20)
         
-        if total_conf >= self.settings['MIN_CONFIDENCE'] and len(detected) >= self.settings['MIN_PATTERNS_REQUIRED']:
-            return {'symbol': 'N/A', 'confidence': min(100,total_conf), 'patterns': detected,
-                    'entry_price': current_price, 'volume_24h': volume_24h, 'entry_time': current_time}
+        if total_conf >= SETTINGS['MIN_CONFIDENCE'] and len(detected) >= SETTINGS['MIN_PATTERNS_REQUIRED']:
+            return {'confidence': min(100,total_conf), 'patterns': detected, 'entry_price': closes[-1]}
         return None
 
     def _calc_rsi(self, c, p=14):
@@ -202,30 +136,21 @@ class FlexibleDetector:
         return {'detected':False}
 
 # =========================================================
-# محاكي التداول (مع أقصى انخفاض + أفضل/أسوأ صفقة + مدة)
+# محاكي محسن (10% لكل صفقة)
 # =========================================================
-class Simulator:
-    def __init__(self, settings: dict):
-        self.settings = settings
+class OptimizedSimulator:
+    def __init__(self):
         self.initial_capital = SIMULATION_CAPITAL
         self.capital = SIMULATION_CAPITAL
         self.active = {}
         self.closed = []
         self.total = 0; self.wins = 0
-        self.consecutive_losses = 0
-        
-        # لتتبع أقصى انخفاض
         self.peak_capital = SIMULATION_CAPITAL
         self.max_drawdown = 0.0
 
-    def can_open(self) -> bool:
-        max_loss = self.settings.get('MAX_CONSECUTIVE_LOSSES', 99)
-        return self.consecutive_losses <= max_loss
-
     def open_trade(self, entry_price: float, entry_time=None):
-        if not self.can_open(): return
-        capital = min(self.capital * 0.5, 250)
-        if capital < 20 or capital > self.capital: return
+        capital = min(self.capital * SETTINGS['CAPITAL_PER_TRADE_RATIO'], SETTINGS['MAX_CAPITAL_PER_TRADE'])
+        if capital < 10 or capital > self.capital: return
         self.capital -= capital
         self.total += 1
         self.active['trade'] = {
@@ -234,13 +159,10 @@ class Simulator:
         }
 
     def update(self, price: float, current_time=None):
-        # تحديث أقصى انخفاض
         current_equity = self.capital + (self.active['trade']['capital'] if 'trade' in self.active else 0)
-        if current_equity > self.peak_capital:
-            self.peak_capital = current_equity
+        if current_equity > self.peak_capital: self.peak_capital = current_equity
         drawdown = (self.peak_capital - current_equity) / self.peak_capital * 100
-        if drawdown > self.max_drawdown:
-            self.max_drawdown = drawdown
+        if drawdown > self.max_drawdown: self.max_drawdown = drawdown
 
         if 'trade' not in self.active: return
         t = self.active['trade']
@@ -248,21 +170,20 @@ class Simulator:
         if price < t['low']: t['low'] = price
         pnl = (price - t['entry']) / t['entry'] * 100
         
-        if pnl <= self.settings['STOP_LOSS']:
+        if pnl <= SETTINGS['STOP_LOSS']:
             self._close(price, pnl, 'وقف خسارة', current_time)
-        elif not t['tp_hit'] and pnl >= self.settings['TAKE_PROFIT']:
+        elif not t['tp_hit'] and pnl >= SETTINGS['TAKE_PROFIT']:
             t['tp_hit'] = True
-            if self.settings.get('PARTIAL_SELL', False):
-                sell_ratio = self.settings.get('PARTIAL_SELL_RATIO', 0.5)
-                self.capital += t['capital'] * sell_ratio * (1 + pnl/100)
+            if SETTINGS.get('PARTIAL_SELL', False):
+                self.capital += t['capital'] * SETTINGS['PARTIAL_SELL_RATIO'] * (1 + pnl/100)
             t['activated'] = True
-            t['trailing'] = price * (1 - self.settings['TRAILING_DISTANCE']/100)
-        elif pnl >= self.settings['TRAILING_ACTIVATION'] and not t['activated']:
+            t['trailing'] = price * (1 - SETTINGS['TRAILING_DISTANCE']/100)
+        elif pnl >= SETTINGS['TRAILING_ACTIVATION'] and not t['activated']:
             t['activated'] = True
-            t['trailing'] = t['high'] * (1 - self.settings['TRAILING_DISTANCE']/100)
+            t['trailing'] = t['high'] * (1 - SETTINGS['TRAILING_DISTANCE']/100)
         
         if t['activated']:
-            new_stop = t['high'] * (1 - self.settings['TRAILING_DISTANCE']/100)
+            new_stop = t['high'] * (1 - SETTINGS['TRAILING_DISTANCE']/100)
             if new_stop > t['trailing']: t['trailing'] = new_stop
             if price <= t['trailing']:
                 self._close(price, pnl, 'وقف متحرك', current_time)
@@ -271,19 +192,14 @@ class Simulator:
         if 'trade' not in self.active: return
         t = self.active['trade']
         exit_time = current_time or datetime.now()
-        self.capital += t['capital'] * (1 + pnl/100) * (0.5 if t.get('tp_hit') and self.settings.get('PARTIAL_SELL') else 1)
-        if pnl > 0: 
-            self.wins += 1
-            self.consecutive_losses = 0
-        else:
-            self.consecutive_losses += 1
+        self.capital += t['capital'] * (1 + pnl/100)
+        if pnl > 0: self.wins += 1
         
-        duration = (exit_time - t['entry_time']).total_seconds() / 60 if t['entry_time'] else 0
+        duration = abs((exit_time - t['entry_time']).total_seconds() / 60) if t['entry_time'] and exit_time else 0
         
         self.closed.append({
             'entry': t['entry'], 'exit': price, 'pnl': pnl, 
             'reason': reason, 'capital': t['capital'],
-            'entry_time': t['entry_time'], 'exit_time': exit_time,
             'duration_minutes': duration
         })
         del self.active['trade']
@@ -307,42 +223,47 @@ class Simulator:
         }
 
 # =========================================================
-# 🧪 محرك الاختبار
+# 🚀 الدالة الرئيسية
 # =========================================================
-async def run_backtest(exchange, strategy_name: str, settings: dict) -> dict:
-    print(f"\n{'='*60}")
-    print(f"🧪 اختبار استراتيجية: {strategy_name}")
-    print(f"{'='*60}")
+async def main():
+    print("""
+╔══════════════════════════════════════════════════════════╗
+║     🧪 استراتيجية ذهبية محسنة – Backtesting شهري 🧪      ║
+║     إدارة رأس مال 10% لكل صفقة                           ║
+╚══════════════════════════════════════════════════════════╝
+    """)
     
-    detector = FlexibleDetector(settings)
-    simulator = Simulator(settings)
+    await send_telegram(f"🚀 *بدء اختبار الاستراتيجية المحسنة*\n{BOT_TAG}\n📅 {BACKTEST_DAYS} يوم | 💰 {SIMULATION_CAPITAL}$ | ⚙️ 10% لكل صفقة")
+    
+    exchange = ccxt_async.binance({'enableRateLimit': True, 'rateLimit': 200, 'options': {'defaultType': 'spot'}})
+    await exchange.fetch_ticker('BTC/USDT')
+    print("✅ Binance متصل\n")
+    
+    detector = SimpleDetector()
+    simulator = OptimizedSimulator()
     
     end_date = datetime.now()
     start_date = end_date - timedelta(days=BACKTEST_DAYS)
     
-    await send_telegram(f"🧪 *بدء اختبار: {strategy_name}*\n{BOT_TAG}\n⏳ {BACKTEST_DAYS} يوم...")
-    
-    symbols = await detector.get_symbols(exchange, limit=100)
-    processed = 0
+    symbols = await detector.get_symbols(exchange, limit=150)
+    print(f"🪙 العملات المختبرة: {len(symbols)}")
     
     for symbol in symbols:
         try:
             since = exchange.parse8601(start_date.strftime('%Y-%m-%dT00:00:00Z'))
             ohlcv = await exchange.fetch_ohlcv(symbol, '5m', since=since, limit=5000)
             if len(ohlcv) < 100: continue
-            processed += 1
             
             for i in range(100, len(ohlcv)):
                 price = ohlcv[i][4]
                 timestamp = datetime.fromtimestamp(ohlcv[i][0]/1000)
-                
                 simulator.update(price, timestamp)
                 
                 data = np.array(ohlcv[max(0,i-60):i+1])
                 if len(data) < 30: continue
                 
-                result = detector.analyze(data, 500000, price, timestamp)
-                if result and simulator.can_open():
+                result = detector.analyze(data)
+                if result:
                     simulator.open_trade(price, timestamp)
                     
         except Exception as e: continue
@@ -351,21 +272,27 @@ async def run_backtest(exchange, strategy_name: str, settings: dict) -> dict:
     if 'trade' in simulator.active:
         simulator._close(0, -2.0, 'نهاية الاختبار', end_date)
     
+    await exchange.close()
+    
     stats = simulator.get_stats()
     
-    # عرض النتائج
     print(f"""
-📊 {strategy_name}:
-   الصفقات: {stats['total']} | نجاح: {stats['win_rate']:.1f}% | ربح: {stats['pnl']:+.2f}$
-   أقصى انخفاض: {stats['max_drawdown']:.1f}% | متوسط المدة: {stats['avg_duration']:.0f} دقيقة
-""")
+╔══════════════════════════════════════════════════════════╗
+║              📊 نتائج Backtesting                         ║
+╠══════════════════════════════════════════════════════════╣
+║  🔄 الصفقات: {stats['total']}                                          ║
+║  ✅ النجاح: {stats['win_rate']:.1f}%                                         ║
+║  💰 الربح: {stats['pnl']:+.2f}$ ({stats['pnl']/SIMULATION_CAPITAL*100:+.2f}%)                               ║
+║  📉 أقصى انخفاض: {stats['max_drawdown']:.1f}%                                    ║
+║  ⏱️ متوسط المدة: {stats['avg_duration']:.0f} دقيقة                                    ║
+╚══════════════════════════════════════════════════════════╝
+    """)
     
-    # إرسال تليجرام مع التفاصيل
     best_str = f"🏆 أفضل: +{stats['best_trade']['pnl']:.2f}% ({stats['best_trade']['duration_minutes']:.0f}د)" if stats['best_trade'] else ""
     worst_str = f"💔 أسوأ: {stats['worst_trade']['pnl']:.2f}% ({stats['worst_trade']['duration_minutes']:.0f}د)" if stats['worst_trade'] else ""
     
     msg = f"""
-📊 *{strategy_name}*
+📊 *نتائج الاستراتيجية المحسنة*
 {BOT_TAG}
 🔄 الصفقات: {stats['total']}
 ✅ النجاح: {stats['win_rate']:.1f}%
@@ -374,53 +301,9 @@ async def run_backtest(exchange, strategy_name: str, settings: dict) -> dict:
 ⏱️ متوسط المدة: {stats['avg_duration']:.0f} دقيقة
 {best_str}
 {worst_str}
+🕐 `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`
     """
     await send_telegram(msg)
-    
-    return {'name': strategy_name, **stats}
-
-# =========================================================
-# 🚀 الدالة الرئيسية
-# =========================================================
-async def main():
-    print("""
-╔══════════════════════════════════════════════════════════╗
-║     🧪 اختبار 6 استراتيجيات – Backtesting شهري 🧪        ║
-║     مع تحليلات متقدمة (أقصى انخفاض + أفضل/أسوأ صفقة)      ║
-╚══════════════════════════════════════════════════════════╝
-    """)
-    
-    await send_telegram(f"🚀 *بدء اختبار 6 استراتيجيات*\n{BOT_TAG}\n📅 {BACKTEST_DAYS} يوم | 💰 {SIMULATION_CAPITAL}$\n📊 تحليلات متقدمة مفعلة")
-    
-    exchange = ccxt_async.binance({'enableRateLimit': True, 'rateLimit': 200, 'options': {'defaultType': 'spot'}})
-    await exchange.fetch_ticker('BTC/USDT')
-    print("✅ Binance متصل\n")
-    
-    results = []
-    for name, settings in STRATEGIES.items():
-        result = await run_backtest(exchange, name, settings)
-        results.append(result)
-    
-    await exchange.close()
-    
-    # ترتيب النتائج
-    results.sort(key=lambda x: x['pnl'], reverse=True)
-    
-    # التقرير النهائي
-    print(f"\n{'='*60}")
-    print("🏆 الترتيب النهائي للاستراتيجيات")
-    print(f"{'='*60}")
-    for i, r in enumerate(results, 1):
-        medal = "🥇" if i==1 else "🥈" if i==2 else "🥉" if i==3 else f"{i}."
-        print(f"{medal} {r['name']}: {r['win_rate']:.1f}% نجاح | {r['pnl']:+.2f}$ | أقصى انخفاض {r['max_drawdown']:.1f}% | متوسط {r['avg_duration']:.0f}د")
-    
-    # إرسال التقرير النهائي
-    report = f"🏆 *الترتيب النهائي*\n{BOT_TAG}\n\n"
-    for i, r in enumerate(results, 1):
-        medal = "🥇" if i==1 else "🥈" if i==2 else "🥉" if i==3 else f"{i}."
-        report += f"{medal} *{r['name']}*: {r['win_rate']:.1f}% | {r['pnl']:+.2f}$ | 📉{r['max_drawdown']:.1f}% | ⏱️{r['avg_duration']:.0f}د\n"
-    report += f"\n🕐 `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`"
-    await send_telegram(report)
 
 if __name__ == "__main__":
     asyncio.run(main())

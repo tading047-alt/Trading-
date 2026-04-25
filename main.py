@@ -28,7 +28,7 @@ import ccxt.async_support as ccxt_async
 # =========================================================
 # إعدادات تليجرام
 # =========================================================
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "7990714202:AAHFT_4V5JyMn74zmuf8tXaSSetbWvqo5BI")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "5067771509")
 BOT_TAG = "#BinanceBot"
 

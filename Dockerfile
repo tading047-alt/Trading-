@@ -1,25 +1,24 @@
-# استخدام نسخة بايثون كاملة لتجنب نقص الاعتماديات
-FROM python:3.10-slim
+# استخدام نسخة بايثون حديثة تدعم pandas 3.0 والمكتبات الأخرى
+FROM python:3.11-slim
 
-# إعداد المجلد الرئيسي
 WORKDIR /app
 
-# تثبيت أدوات البناء الضرورية (GCC و C++)
+# تثبيت الأدوات الضرورية لبناء المكتبات
 RUN apt-get update && apt-get install -y \
     build-essential \
     gcc \
-    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# تحديث pip
+# تحديث pip لأحدث نسخة
 RUN pip install --no-cache-dir --upgrade pip
 
-# نسخ وتثبيت المكتبات
+# نسخ ملف المتطلبات
 COPY requirements.txt .
+
+# تثبيت المكتبات مع تحديد نسخ متوافقة
 RUN pip install --no-cache-dir -r requirements.txt
 
-# نسخ باقي ملفات المشروع
+# نسخ باقي الملفات
 COPY . .
 
-# تشغيل البوت
 CMD ["python", "main.py"]

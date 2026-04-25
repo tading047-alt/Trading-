@@ -1,24 +1,25 @@
-# استخدام نسخة بايثون حديثة تدعم pandas 3.0 والمكتبات الأخرى
+# استخدام نسخة بايثون 3.11 مستقرة
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# تثبيت الأدوات الضرورية لبناء المكتبات
+# تثبيت git بالإضافة إلى أدوات البناء
 RUN apt-get update && apt-get install -y \
     build-essential \
     gcc \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# تحديث pip لأحدث نسخة
+# تحديث pip
 RUN pip install --no-cache-dir --upgrade pip
 
 # نسخ ملف المتطلبات
 COPY requirements.txt .
 
-# تثبيت المكتبات مع تحديد نسخ متوافقة
+# تثبيت المكتبات
 RUN pip install --no-cache-dir -r requirements.txt
 
-# نسخ باقي الملفات
+# نسخ باقي ملفات المشروع
 COPY . .
 
 CMD ["python", "main.py"]

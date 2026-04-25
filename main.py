@@ -1,31 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🚂 نظام اكتشاف الانفجارات - الإصدار النهائي (Railway Ready)
-First Station Explosion Detector - Final Edition
+🚂 نظام اكتشاف الانفجارات - الإصدار النهائي المتكامل
+First Station Explosion Detector - Final Complete Edition
 
-التفعيل:
-✅ /live     → تداول حي (افتراضي)
-✅ /backtest → اختبار عكسي لآخر 7 أيام
-✅ بدون أي input() - يعمل تلقائياً على Railway
-
-التحسينات المتكاملة:
-✅ منصة Binance
-✅ أفضل 3 أنماط فقط
-✅ فلتر تأكيد الحجم (1.3x)
-✅ فلتر اتجاه السوق (BTC فوق EMA50)
-✅ فلتر RSI (تجنب التشبع >72)
-✅ تتبع أداء العملات (منع المتكررة الخاسرة)
-✅ تأكيد MACD إيجابي
-✅ 50% من رأس المال مع تراكم الأرباح
-✅ بيع 50% عند 3.2% + تفعيل وقف متحرك ضيق 0.5%
-✅ وقف خسارة -2.0%
-✅ خروج مبكر (شمعة هبوط، تقاطع EMA، كسر دعم)
-✅ إشعارات تليجرام كاملة
-✅ أوامر تفاعلية (/open, /closed, /stats, /download, /status, /help, /live, /backtest)
-✅ تسجيل CSV + قاعدة بيانات SQLite
-✅ لوحة تحكم ويب
-✅ نبضات قلب كل ساعتين + تقرير يومي
+المميزات:
+✅ وضع Live + Backtesting (تبديل عبر /live و /backtest)
+✅ تقارير Backtesting مفصلة تلقائياً إلى تليجرام
+✅ إحصائيات الأنماط وأفضل العملات
+✅ جميع الفلاتر والتحسينات السابقة
+✅ أوامر تليجرام تفاعلية كاملة
+✅ إشعارات فتح وإغلاق الصفقات
+✅ لوحة تحكم ويب Flask
+✅ نبضات قلب + تقارير يومية
 """
 
 import asyncio, threading, sqlite3, pandas as pd, numpy as np, httpx, json, os, time, csv
@@ -46,7 +33,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "5067771509")
 BOT_TAG = "#BinanceBot"
 
 # =========================================================
-# 🆕 وضع التشغيل (live أو backtest) - بدون input()
+# وضع التشغيل
 # =========================================================
 TRADING_MODE = os.environ.get("TRADING_MODE", "live")
 BACKTEST_DAYS = int(os.environ.get("BACKTEST_DAYS", 7))
@@ -54,7 +41,7 @@ BACKTEST_DAYS = int(os.environ.get("BACKTEST_DAYS", 7))
 print(f"⚙️ وضع التشغيل: {TRADING_MODE}")
 
 # =========================================================
-# 🏆 الإعدادات المثلى مع جميع الفلاتر
+# الإعدادات المثلى
 # =========================================================
 MAX_TRADES_PER_DAY = 5
 MAX_CONCURRENT_TRADES = 1
@@ -78,7 +65,6 @@ PATTERN_WEIGHTS = {'calm_before_storm': 45, 'whale_accumulation': 55, 'bollinger
 
 VOLUME_RATIO_THRESHOLD = 1.3
 RSI_MAX = 72
-BTC_EMA_PERIOD = 50
 MACD_CONFIRMATION = True
 SYMBOL_LOSS_STREAK_LIMIT = 2
 
@@ -86,7 +72,7 @@ BTC_MIN_ADX = 22
 BTC_MAX_DROP_1H = -1.5
 
 # =========================================================
-# 🆕 استراتيجية الخروج (بيع جزئي + وقف متحرك ضيق)
+# استراتيجية الخروج
 # =========================================================
 EXIT_STRATEGY = {
     'take_profit': 3.2,
@@ -102,7 +88,7 @@ EARLY_EXIT_EMA_SLOW = 21
 EARLY_EXIT_BREAK_PREV_LOW = True
 
 # =========================================================
-# مسارات الملفات وقاعدة البيانات
+# مسارات الملفات
 # =========================================================
 LOG_DIR = "trading_logs"
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -188,8 +174,7 @@ class TradeManager:
         if symbol in self.active_trades: return False, 0.0
         if len(self.active_trades) >= MAX_CONCURRENT_TRADES: return False, 0.0
         if self.daily_trades >= MAX_TRADES_PER_DAY: return False, 0.0
-        if self.symbol_loss_streak.get(symbol, 0) >= SYMBOL_LOSS_STREAK_LIMIT:
-            return False, 0.0
+        if self.symbol_loss_streak.get(symbol, 0) >= SYMBOL_LOSS_STREAK_LIMIT: return False, 0.0
         capital = min(self.available_capital * CAPITAL_PER_TRADE_RATIO, MAX_CAPITAL_PER_TRADE)
         if capital < MIN_CAPITAL_PER_TRADE: return False, 0.0
         if capital > self.available_capital: return False, 0.0
@@ -256,10 +241,8 @@ class TradeManager:
         pnl_usd = trade.capital * pnl_pct / 100
         self.daily_pnl += pnl_pct
         if pnl_pct > 0: self.winning_trades += 1
-        if pnl_pct < 0:
-            self.symbol_loss_streak[symbol] = self.symbol_loss_streak.get(symbol, 0) + 1
-        else:
-            self.symbol_loss_streak[symbol] = 0
+        if pnl_pct < 0: self.symbol_loss_streak[symbol] = self.symbol_loss_streak.get(symbol, 0) + 1
+        else: self.symbol_loss_streak[symbol] = 0
         result = {'symbol': symbol, 'entry_price': trade.entry_price, 'exit_price': price,
                   'pnl_pct': pnl_pct, 'pnl_usd': pnl_usd, 'entry_time': trade.entry_time,
                   'exit_time': datetime.now(), 'pattern': trade.pattern,
@@ -428,52 +411,182 @@ class ExplosionDetector:
     def _record_signal(self, signal): self.recent_signals.append(signal); self.last_signal_time[signal.symbol]=datetime.now()
 
 # =========================================================
-# 🆕 محرك Backtesting
+# 🆕 محرك Backtesting المتكامل (مع تقارير تليجرام)
 # =========================================================
 class BacktestEngine:
-    def __init__(self, detector, trade_manager):
+    def __init__(self, detector, trade_manager, notifier=None):
         self.detector = detector
         self.trade_manager = trade_manager
+        self.notifier = notifier
 
     async def run(self, exchange):
-        print(f"📊 بدء Backtesting لآخر {BACKTEST_DAYS} أيام...")
+        print(f"""
+╔══════════════════════════════════════════════════════════╗
+║           📊 وضع Backtesting - آخر {BACKTEST_DAYS} أيام           ║
+╚══════════════════════════════════════════════════════════╝
+        """)
+        
         end_date = datetime.now()
         start_date = end_date - timedelta(days=BACKTEST_DAYS)
+        
+        print(f"📅 الفترة: {start_date.strftime('%Y-%m-%d')} → {end_date.strftime('%Y-%m-%d')}")
+        
+        # إرسال إشعار بدء Backtesting
+        if self.notifier:
+            await self.notifier._send(f"📊 *بدء Backtesting*\n{BOT_TAG}\n📅 {start_date.strftime('%Y-%m-%d')} → {end_date.strftime('%Y-%m-%d')}\n⏳ يرجى الانتظار...")
+        
         symbols = await self.detector._get_active_symbols(exchange)
-        total_trades = 0; winning_trades = 0
+        print(f"🪙 عدد العملات: {len(symbols)}")
+        
+        total_trades = 0
+        winning_trades = 0
+        total_pnl = 0.0
+        best_trade = None
+        worst_trade = None
+        pattern_stats = {}
+        symbol_stats = {}
+        processed_symbols = 0
+        
         for symbol in symbols[:50]:
             try:
                 since = exchange.parse8601(start_date.strftime('%Y-%m-%dT00:00:00Z'))
                 ohlcv = await exchange.fetch_ohlcv(symbol, '5m', since=since, limit=1000)
-                if len(ohlcv) < 100: continue
+                
+                if len(ohlcv) < 100:
+                    continue
+                
+                processed_symbols += 1
+                symbol_trades = 0
+                print(f"\n🔍 اختبار {symbol}... ({len(ohlcv)} شمعة)")
+                
                 for i in range(100, len(ohlcv)):
                     current_price = ohlcv[i][4]
+                    
                     result = self.trade_manager.update_trade(symbol, current_price)
                     if result:
-                        if result['pnl_pct'] > 0: winning_trades += 1
                         total_trades += 1
-                    data = np.array(ohlcv[max(0,i-60):i+1])
-                    if len(data) < 30: continue
-                    closes = data[:,4]; volumes = data[:,5]
+                        symbol_trades += 1
+                        total_pnl += result['pnl_usd']
+                        
+                        if result['pnl_pct'] > 0:
+                            winning_trades += 1
+                        
+                        if best_trade is None or result['pnl_pct'] > best_trade['pnl_pct']:
+                            best_trade = result
+                        if worst_trade is None or result['pnl_pct'] < worst_trade['pnl_pct']:
+                            worst_trade = result
+                        
+                        pattern = result.get('pattern', 'غير معروف')
+                        if pattern not in pattern_stats:
+                            pattern_stats[pattern] = {'total': 0, 'wins': 0, 'pnl': 0.0}
+                        pattern_stats[pattern]['total'] += 1
+                        pattern_stats[pattern]['pnl'] += result['pnl_pct']
+                        if result['pnl_pct'] > 0:
+                            pattern_stats[pattern]['wins'] += 1
+                        
+                        if symbol not in symbol_stats:
+                            symbol_stats[symbol] = {'total': 0, 'wins': 0, 'pnl': 0.0}
+                        symbol_stats[symbol]['total'] += 1
+                        symbol_stats[symbol]['pnl'] += result['pnl_pct']
+                        if result['pnl_pct'] > 0:
+                            symbol_stats[symbol]['wins'] += 1
+                    
+                    data = np.array(ohlcv[max(0, i-60):i+1])
+                    if len(data) < 30:
+                        continue
+                    
+                    closes = data[:, 4]
+                    volumes = data[:, 5]
+                    
                     avg_vol = np.mean(volumes[-20:]) if len(volumes) >= 20 else volumes[-1]
-                    if volumes[-1] / avg_vol < VOLUME_RATIO_THRESHOLD: continue
+                    if volumes[-1] / avg_vol < VOLUME_RATIO_THRESHOLD:
+                        continue
+                    
                     detected = []
                     for check in [self.detector._check_calm_before_storm(volumes, closes),
                                   self.detector._check_whale_accumulation(volumes, closes),
                                   self.detector._check_bollinger_squeeze(closes)]:
-                        if check['detected']: detected.append(check['name'])
+                        if check['detected']:
+                            detected.append(check['name'])
+                    
                     if len(detected) >= MIN_PATTERNS_REQUIRED:
-                        signal = ExplosionSignal(symbol=symbol, confidence=80, expected_move=3.2,
+                        signal = ExplosionSignal(
+                            symbol=symbol, confidence=80, expected_move=3.2,
                             time_to_explosion=120, entry_price=current_price,
-                            patterns=detected, volume_24h=500000, current_change=0, priority=3)
+                            patterns=detected, volume_24h=500000, current_change=0, priority=3
+                        )
                         self.trade_manager.open_trade(signal)
-            except Exception as e: print(f"  ⚠️ {symbol}: {e}")
+                
+                print(f"   ✓ {symbol}: {symbol_trades} صفقة")
+                
+            except Exception as e:
+                print(f"  ⚠️ خطأ في {symbol}: {e}")
+                continue
+        
         for sym in list(self.trade_manager.active_trades.keys()):
             self.trade_manager._close_trade(sym, 0, -2.0, 'end_of_backtest')
+        
         win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
-        net = self.trade_manager.available_capital - TOTAL_CAPITAL
-        print(f"\n📊 نتائج Backtest: {total_trades} صفقة | نجاح {win_rate:.1f}% | ربح {net:+.2f}$")
-        return {'total': total_trades, 'wins': winning_trades, 'win_rate': win_rate, 'pnl': net}
+        net_pnl = self.trade_manager.available_capital - TOTAL_CAPITAL
+        
+        print(f"""
+╔══════════════════════════════════════════════════════════╗
+║              📊 نتائج Backtesting النهائية                 ║
+╠══════════════════════════════════════════════════════════╣
+║  📅 الفترة: {start_date.strftime('%Y-%m-%d')} → {end_date.strftime('%Y-%m-%d')}              ║
+║  🪙 العملات المختبرة: {processed_symbols}                                ║
+║  🔄 إجمالي الصفقات: {total_trades}                                  ║
+║  ✅ الصفقات الرابحة: {winning_trades}                                  ║
+║  🎯 نسبة النجاح: {win_rate:.1f}%                                 ║
+║  💰 صافي الربح: {net_pnl:+.2f}$ ({net_pnl/TOTAL_CAPITAL*100:+.2f}%)                         ║
+╠══════════════════════════════════════════════════════════╣
+║  🏆 أفضل صفقة: {best_trade['symbol'] if best_trade else 'N/A'} (+{best_trade['pnl_pct']:.2f}%)                        ║
+║  💔 أسوأ صفقة: {worst_trade['symbol'] if worst_trade else 'N/A'} ({worst_trade['pnl_pct']:.2f}%)                        ║
+╚══════════════════════════════════════════════════════════╝
+        """)
+        
+        # 🆕 إرسال النتائج إلى تليجرام
+        if self.notifier:
+            msg = f"""📊 *نتائج Backtesting*
+{BOT_TAG}
+
+📅 {start_date.strftime('%Y-%m-%d')} → {end_date.strftime('%Y-%m-%d')}
+🪙 العملات: {processed_symbols}
+
+📈 *إجمالي:*
+🔄 الصفقات: {total_trades}
+✅ الرابحة: {winning_trades}
+❌ الخاسرة: {total_trades - winning_trades}
+🎯 النجاح: {win_rate:.1f}%
+💰 الربح: {net_pnl:+.2f}$ ({net_pnl/TOTAL_CAPITAL*100:+.2f}%)
+
+🏆 أفضل: {best_trade['symbol'] if best_trade else 'N/A'} (+{best_trade['pnl_pct']:.2f}%)
+💔 أسوأ: {worst_trade['symbol'] if worst_trade else 'N/A'} ({worst_trade['pnl_pct']:.2f}%)
+"""
+            await self.notifier._send(msg)
+            
+            if pattern_stats:
+                pattern_msg = "📊 *أداء الأنماط*\n{BOT_TAG}\n\n"
+                for pattern, stats in sorted(pattern_stats.items(), key=lambda x: x[1]['pnl'], reverse=True):
+                    p_win_rate = (stats['wins'] / stats['total'] * 100) if stats['total'] > 0 else 0
+                    pattern_msg += f"• {pattern}\n   {stats['total']} صفقة | {p_win_rate:.0f}% | {stats['pnl']:+.2f}%\n"
+                await self.notifier._send(pattern_msg)
+            
+            if symbol_stats:
+                symbol_msg = "🏆 *أفضل 5 عملات*\n{BOT_TAG}\n\n"
+                top_symbols = sorted(symbol_stats.items(), key=lambda x: x[1]['pnl'], reverse=True)[:5]
+                for sym, stats in top_symbols:
+                    s_win_rate = (stats['wins'] / stats['total'] * 100) if stats['total'] > 0 else 0
+                    symbol_msg += f"• {sym}\n   {stats['total']} صفقة | {s_win_rate:.0f}% | {stats['pnl']:+.2f}%\n"
+                await self.notifier._send(symbol_msg)
+        
+        return {
+            'total_trades': total_trades, 'winning_trades': winning_trades,
+            'win_rate': win_rate, 'net_pnl': net_pnl,
+            'best_trade': best_trade, 'worst_trade': worst_trade,
+            'pattern_stats': pattern_stats, 'symbol_stats': symbol_stats,
+            'processed_symbols': processed_symbols
+        }
 
 # =========================================================
 # نظام الإشعارات
@@ -517,7 +630,7 @@ class EnhancedExplosionNotifier:
         except Exception as e: print(f"⚠️ تليجرام: {e}")
 
 # =========================================================
-# مستمع أوامر تليجرام (مع /live و /backtest)
+# مستمع أوامر تليجرام
 # =========================================================
 class TelegramPoller:
     def __init__(self, token, engine, notifier):
@@ -660,7 +773,7 @@ class ExplosionScannerEngine:
                 await asyncio.sleep(30)
 
         if TRADING_MODE == "backtest":
-            backtest = BacktestEngine(self.detector, self.trade_manager)
+            backtest = BacktestEngine(self.detector, self.trade_manager, self.notifier)
             await backtest.run(exchange)
             await exchange.close()
             return

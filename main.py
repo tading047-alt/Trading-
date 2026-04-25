@@ -5,7 +5,7 @@ from telegram import Bot
 # دالة محدثة لإرسال النص والملف معاً
 async def send_telegram_report_with_file(results_dict):
     token = '8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo'
-    chat_id = 'YOUR_CHAT_ID'
+    chat_id = '5067771509'
     bot = Bot(token=token)
     
     # 1. تحويل النتائج إلى DataFrame وحفظها كـ CSV

@@ -1,18 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🚂 نظام اكتشاف الانفجارات - الإصدار النهائي المتكامل
-First Station Explosion Detector - Final Complete Edition
-
-المميزات:
-✅ وضع Live + Backtesting (تبديل عبر /live و /backtest)
-✅ تقارير Backtesting مفصلة تلقائياً إلى تليجرام
-✅ إحصائيات الأنماط وأفضل العملات
-✅ جميع الفلاتر والتحسينات السابقة
-✅ أوامر تليجرام تفاعلية كاملة
-✅ إشعارات فتح وإغلاق الصفقات
-✅ لوحة تحكم ويب Flask
-✅ نبضات قلب + تقارير يومية
+🚂 نظام اكتشاف الانفجارات - وضع Backtesting للتجربة
+First Station Explosion Detector - Backtesting Edition
 """
 
 import asyncio, threading, sqlite3, pandas as pd, numpy as np, httpx, json, os, time, csv
@@ -28,15 +18,15 @@ import ccxt.async_support as ccxt_async
 # =========================================================
 # إعدادات تليجرام
 # =========================================================
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "7990714202:AAHFT_4V5JyMn74zmuf8tXaSSetbWvqo5BI")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "5067771509")
 BOT_TAG = "#BinanceBot"
 
 # =========================================================
-# وضع التشغيل
+# 🎯 تم تغيير الوضع إلى Backtesting مباشرة
 # =========================================================
-TRADING_MODE = os.environ.get("TRADING_MODE", "live")
-BACKTEST_DAYS = int(os.environ.get("BACKTEST_DAYS", 7))
+TRADING_MODE = "backtest"  # 👈 تم التغيير هنا
+BACKTEST_DAYS = 7
 
 print(f"⚙️ وضع التشغيل: {TRADING_MODE}")
 
@@ -71,9 +61,6 @@ SYMBOL_LOSS_STREAK_LIMIT = 2
 BTC_MIN_ADX = 22
 BTC_MAX_DROP_1H = -1.5
 
-# =========================================================
-# استراتيجية الخروج
-# =========================================================
 EXIT_STRATEGY = {
     'take_profit': 3.2,
     'partial_sell_ratio': 0.5,
@@ -87,9 +74,6 @@ EARLY_EXIT_EMA_FAST = 9
 EARLY_EXIT_EMA_SLOW = 21
 EARLY_EXIT_BREAK_PREV_LOW = True
 
-# =========================================================
-# مسارات الملفات
-# =========================================================
 LOG_DIR = "trading_logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(f"{LOG_DIR}/daily", exist_ok=True)
@@ -132,9 +116,6 @@ def insert_trade_archive(symbol, entry_price, exit_price, pnl_pct, pnl_usd, entr
     conn.commit()
     conn.close()
 
-# =========================================================
-# أنواع البيانات
-# =========================================================
 class MarketRegime(Enum):
     TRENDING_BULLISH = "bullish"; TRENDING_BEARISH = "bearish"
     RANGING = "ranging"; TRANSITIONAL = "transitional"
@@ -157,9 +138,6 @@ class ActiveTrade:
     trailing_stop: float; trailing_activated: bool; take_profit_hit: bool
     pattern: str; confidence: float; atr_percent: float = 0.0
 
-# =========================================================
-# مدير الصفقات
-# =========================================================
 class TradeManager:
     def __init__(self, notifier=None):
         self.active_trades: Dict[str, ActiveTrade] = {}
@@ -258,9 +236,6 @@ class TradeManager:
     def get_win_rate(self) -> float:
         return (self.winning_trades / self.total_trades * 100) if self.total_trades else 0.0
 
-# =========================================================
-# كاشف الانفجارات
-# =========================================================
 class ExplosionDetector:
     def __init__(self):
         self.pattern_weights = PATTERN_WEIGHTS
@@ -410,9 +385,6 @@ class ExplosionDetector:
         return True
     def _record_signal(self, signal): self.recent_signals.append(signal); self.last_signal_time[signal.symbol]=datetime.now()
 
-# =========================================================
-# 🆕 محرك Backtesting المتكامل (مع تقارير تليجرام)
-# =========================================================
 class BacktestEngine:
     def __init__(self, detector, trade_manager, notifier=None):
         self.detector = detector
@@ -431,97 +403,59 @@ class BacktestEngine:
         
         print(f"📅 الفترة: {start_date.strftime('%Y-%m-%d')} → {end_date.strftime('%Y-%m-%d')}")
         
-        # إرسال إشعار بدء Backtesting
         if self.notifier:
             await self.notifier._send(f"📊 *بدء Backtesting*\n{BOT_TAG}\n📅 {start_date.strftime('%Y-%m-%d')} → {end_date.strftime('%Y-%m-%d')}\n⏳ يرجى الانتظار...")
         
         symbols = await self.detector._get_active_symbols(exchange)
         print(f"🪙 عدد العملات: {len(symbols)}")
         
-        total_trades = 0
-        winning_trades = 0
-        total_pnl = 0.0
-        best_trade = None
-        worst_trade = None
-        pattern_stats = {}
-        symbol_stats = {}
+        total_trades = 0; winning_trades = 0
+        best_trade = None; worst_trade = None
+        pattern_stats = {}; symbol_stats = {}
         processed_symbols = 0
         
         for symbol in symbols[:50]:
             try:
                 since = exchange.parse8601(start_date.strftime('%Y-%m-%dT00:00:00Z'))
                 ohlcv = await exchange.fetch_ohlcv(symbol, '5m', since=since, limit=1000)
-                
-                if len(ohlcv) < 100:
-                    continue
-                
+                if len(ohlcv) < 100: continue
                 processed_symbols += 1
                 symbol_trades = 0
                 print(f"\n🔍 اختبار {symbol}... ({len(ohlcv)} شمعة)")
                 
                 for i in range(100, len(ohlcv)):
                     current_price = ohlcv[i][4]
-                    
                     result = self.trade_manager.update_trade(symbol, current_price)
                     if result:
-                        total_trades += 1
-                        symbol_trades += 1
-                        total_pnl += result['pnl_usd']
-                        
-                        if result['pnl_pct'] > 0:
-                            winning_trades += 1
-                        
-                        if best_trade is None or result['pnl_pct'] > best_trade['pnl_pct']:
-                            best_trade = result
-                        if worst_trade is None or result['pnl_pct'] < worst_trade['pnl_pct']:
-                            worst_trade = result
-                        
+                        total_trades += 1; symbol_trades += 1
+                        if result['pnl_pct'] > 0: winning_trades += 1
+                        if best_trade is None or result['pnl_pct'] > best_trade['pnl_pct']: best_trade = result
+                        if worst_trade is None or result['pnl_pct'] < worst_trade['pnl_pct']: worst_trade = result
                         pattern = result.get('pattern', 'غير معروف')
-                        if pattern not in pattern_stats:
-                            pattern_stats[pattern] = {'total': 0, 'wins': 0, 'pnl': 0.0}
-                        pattern_stats[pattern]['total'] += 1
-                        pattern_stats[pattern]['pnl'] += result['pnl_pct']
-                        if result['pnl_pct'] > 0:
-                            pattern_stats[pattern]['wins'] += 1
-                        
-                        if symbol not in symbol_stats:
-                            symbol_stats[symbol] = {'total': 0, 'wins': 0, 'pnl': 0.0}
-                        symbol_stats[symbol]['total'] += 1
-                        symbol_stats[symbol]['pnl'] += result['pnl_pct']
-                        if result['pnl_pct'] > 0:
-                            symbol_stats[symbol]['wins'] += 1
+                        if pattern not in pattern_stats: pattern_stats[pattern] = {'total': 0, 'wins': 0, 'pnl': 0.0}
+                        pattern_stats[pattern]['total'] += 1; pattern_stats[pattern]['pnl'] += result['pnl_pct']
+                        if result['pnl_pct'] > 0: pattern_stats[pattern]['wins'] += 1
+                        if symbol not in symbol_stats: symbol_stats[symbol] = {'total': 0, 'wins': 0, 'pnl': 0.0}
+                        symbol_stats[symbol]['total'] += 1; symbol_stats[symbol]['pnl'] += result['pnl_pct']
+                        if result['pnl_pct'] > 0: symbol_stats[symbol]['wins'] += 1
                     
                     data = np.array(ohlcv[max(0, i-60):i+1])
-                    if len(data) < 30:
-                        continue
-                    
-                    closes = data[:, 4]
-                    volumes = data[:, 5]
-                    
+                    if len(data) < 30: continue
+                    closes = data[:, 4]; volumes = data[:, 5]
                     avg_vol = np.mean(volumes[-20:]) if len(volumes) >= 20 else volumes[-1]
-                    if volumes[-1] / avg_vol < VOLUME_RATIO_THRESHOLD:
-                        continue
-                    
+                    if volumes[-1] / avg_vol < VOLUME_RATIO_THRESHOLD: continue
                     detected = []
                     for check in [self.detector._check_calm_before_storm(volumes, closes),
                                   self.detector._check_whale_accumulation(volumes, closes),
                                   self.detector._check_bollinger_squeeze(closes)]:
-                        if check['detected']:
-                            detected.append(check['name'])
-                    
+                        if check['detected']: detected.append(check['name'])
                     if len(detected) >= MIN_PATTERNS_REQUIRED:
-                        signal = ExplosionSignal(
-                            symbol=symbol, confidence=80, expected_move=3.2,
+                        signal = ExplosionSignal(symbol=symbol, confidence=80, expected_move=3.2,
                             time_to_explosion=120, entry_price=current_price,
-                            patterns=detected, volume_24h=500000, current_change=0, priority=3
-                        )
+                            patterns=detected, volume_24h=500000, current_change=0, priority=3)
                         self.trade_manager.open_trade(signal)
-                
                 print(f"   ✓ {symbol}: {symbol_trades} صفقة")
-                
-            except Exception as e:
-                print(f"  ⚠️ خطأ في {symbol}: {e}")
-                continue
+            except Exception as e: print(f"  ⚠️ خطأ في {symbol}: {e}")
         
         for sym in list(self.trade_manager.active_trades.keys()):
             self.trade_manager._close_trade(sym, 0, -2.0, 'end_of_backtest')
@@ -545,7 +479,6 @@ class BacktestEngine:
 ╚══════════════════════════════════════════════════════════╝
         """)
         
-        # 🆕 إرسال النتائج إلى تليجرام
         if self.notifier:
             msg = f"""📊 *نتائج Backtesting*
 {BOT_TAG}
@@ -571,26 +504,8 @@ class BacktestEngine:
                     p_win_rate = (stats['wins'] / stats['total'] * 100) if stats['total'] > 0 else 0
                     pattern_msg += f"• {pattern}\n   {stats['total']} صفقة | {p_win_rate:.0f}% | {stats['pnl']:+.2f}%\n"
                 await self.notifier._send(pattern_msg)
-            
-            if symbol_stats:
-                symbol_msg = "🏆 *أفضل 5 عملات*\n{BOT_TAG}\n\n"
-                top_symbols = sorted(symbol_stats.items(), key=lambda x: x[1]['pnl'], reverse=True)[:5]
-                for sym, stats in top_symbols:
-                    s_win_rate = (stats['wins'] / stats['total'] * 100) if stats['total'] > 0 else 0
-                    symbol_msg += f"• {sym}\n   {stats['total']} صفقة | {s_win_rate:.0f}% | {stats['pnl']:+.2f}%\n"
-                await self.notifier._send(symbol_msg)
-        
-        return {
-            'total_trades': total_trades, 'winning_trades': winning_trades,
-            'win_rate': win_rate, 'net_pnl': net_pnl,
-            'best_trade': best_trade, 'worst_trade': worst_trade,
-            'pattern_stats': pattern_stats, 'symbol_stats': symbol_stats,
-            'processed_symbols': processed_symbols
-        }
+        return {'total': total_trades, 'wins': winning_trades, 'win_rate': win_rate, 'pnl': net_pnl}
 
-# =========================================================
-# نظام الإشعارات
-# =========================================================
 class EnhancedExplosionNotifier:
     def __init__(self):
         self.tg_token = TELEGRAM_TOKEN; self.tg_chat = TELEGRAM_CHAT_ID
@@ -617,10 +532,6 @@ class EnhancedExplosionNotifier:
         base=os.environ.get("RENDER_EXTERNAL_URL","http://localhost:8080")
         msg=f"""📁 *روابط CSV*\n{BOT_TAG}\n• [الإشارات]({base}/download/signals)\n• [الصفقات]({base}/download/trades)"""
         await self._send_to(chat_id, msg)
-    async def send_mode_changed(self, mode: str):
-        emoji = "🟢" if mode == "live" else "📊"
-        msg = f"""{emoji} *تم تغيير الوضع*\n{BOT_TAG}\n\nالوضع الحالي: {mode}\n\n🔄 جاري إعادة التشغيل...\n🕐 `{datetime.now().strftime('%H:%M:%S')}`"""
-        await self._send(msg)
     async def _send(self, msg): await self._send_to(self.tg_chat, msg)
     async def _send_to(self, chat_id, msg):
         try:
@@ -629,9 +540,6 @@ class EnhancedExplosionNotifier:
                 await c.post(url, json={"chat_id":chat_id,"text":msg.strip(),"parse_mode":"Markdown"})
         except Exception as e: print(f"⚠️ تليجرام: {e}")
 
-# =========================================================
-# مستمع أوامر تليجرام
-# =========================================================
 class TelegramPoller:
     def __init__(self, token, engine, notifier):
         self.token = token; self.engine = engine; self.notifier = notifier
@@ -655,23 +563,12 @@ class TelegramPoller:
                                 elif text=="/open": await self._open(chat_id)
                                 elif text=="/closed": await self._closed(chat_id)
                                 elif text=="/stats": await self._stats(chat_id)
-                                elif text=="/live":
-                                    await self.notifier.send_mode_changed("live")
-                                    await self._send(chat_id, "🔄 جاري إعادة التشغيل في وضع Live...")
-                                    os.environ["TRADING_MODE"] = "live"
-                                    os._exit(0)
-                                elif text=="/backtest":
-                                    await self.notifier.send_mode_changed("backtest")
-                                    await self._send(chat_id, "🔄 جاري إعادة التشغيل في وضع Backtesting...")
-                                    os.environ["TRADING_MODE"] = "backtest"
-                                    os._exit(0)
-                                elif text=="/help": await self._send(chat_id, "/status /open /closed /stats /download /live /backtest /help")
+                                elif text=="/help": await self._send(chat_id, "/status /open /closed /stats /download /help")
                                 else: await self._send(chat_id,"❌ /help")
             except: pass
             await asyncio.sleep(1)
     async def _status(self, cid):
-        e=self.engine
-        await self._send(cid,f"""📊 *حالة*\n{BOT_TAG}\n🔍 {e.scan_count}\n💵 {e.trade_manager.available_capital:.2f}$\n📊 {len(e.trade_manager.active_trades)}\n📈 {e.trade_manager.daily_trades}\n🎯 {e.trade_manager.get_win_rate():.1f}%\n🕐 `{datetime.now().strftime('%H:%M:%S')}`""")
+        e=self.engine; await self._send(cid,f"""📊 *حالة*\n{BOT_TAG}\n🔍 {e.scan_count}\n💵 {e.trade_manager.available_capital:.2f}$\n📊 {len(e.trade_manager.active_trades)}\n📈 {e.trade_manager.daily_trades}\n🎯 {e.trade_manager.get_win_rate():.1f}%\n🕐 `{datetime.now().strftime('%H:%M:%S')}`""")
     async def _open(self, cid):
         a=self.engine.trade_manager.active_trades
         if not a: await self._send(cid,"📊 لا صفقات مفتوحة."); return
@@ -710,9 +607,6 @@ class TelegramPoller:
                 await c.post(url, json={"chat_id":cid,"text":txt,"parse_mode":"Markdown"})
         except: pass
 
-# =========================================================
-# فلتر السوق
-# =========================================================
 class MarketRegimeFilter:
     def __init__(self): self.btc='BTC/USDT'; self.data={}
     async def analyze(self, ex) -> dict:
@@ -744,9 +638,6 @@ class MarketRegimeFilter:
         for i in range(p,len(data)): ema[i]=data[i]*alpha+ema[i-1]*(1-alpha)
         return ema
 
-# =========================================================
-# المحرك الرئيسي
-# =========================================================
 class ExplosionScannerEngine:
     def __init__(self):
         self.notifier = EnhancedExplosionNotifier()
@@ -784,7 +675,6 @@ class ExplosionScannerEngine:
                 self.scan_count += 1; start = time.time()
                 try: self.market_regime = await self.market_filter.analyze(exchange)
                 except: self.market_regime = {'can_trade':True}
-
                 if self.trade_manager.active_trades:
                     tasks = {s: exchange.fetch_ohlcv(s, '5m', limit=26) for s in self.trade_manager.active_trades}
                     results = {}
@@ -795,12 +685,9 @@ class ExplosionScannerEngine:
                         try:
                             ticker = await exchange.fetch_ticker(s); price = ticker['last']
                             data = results.get(s)
-                            if data and len(data) >= 26:
-                                self.trade_manager.update_trade(s, price, np.array(data))
-                            else:
-                                self.trade_manager.update_trade(s, price)
+                            if data and len(data) >= 26: self.trade_manager.update_trade(s, price, np.array(data))
+                            else: self.trade_manager.update_trade(s, price)
                         except: pass
-
                 signals = []
                 if self.market_regime.get('can_trade', True):
                     try: signals = await self.detector.scan_market(exchange)
@@ -817,7 +704,6 @@ class ExplosionScannerEngine:
                                     await asyncio.sleep(0.3)
                     else: print("\n⚪ لا إشارات")
                 else: print("\n⚠️ متوقف")
-
                 elapsed = time.time() - start
                 self.last_scan_stats = {'scanned':SCAN_SYMBOLS_LIMIT,'signals':len(signals),'duration':round(elapsed,2),'time':datetime.now().strftime('%H:%M:%S')}
                 if (datetime.now() - self.last_heartbeat).total_seconds() > 7200:
@@ -836,9 +722,6 @@ class ExplosionScannerEngine:
             try: await asyncio.sleep(SCAN_INTERVAL)
             except asyncio.CancelledError: break
 
-# =========================================================
-# تطبيق Flask
-# =========================================================
 app = Flask(__name__)
 engine_instance = None
 

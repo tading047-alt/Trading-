@@ -5,7 +5,7 @@ import asyncio
 import os
 from telegram import Bot
 
-# ==================== إعدادات ====================
+# ==================== إعدادات V29 ====================
 TELEGRAM_TOKEN = '8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo'
 CHAT_ID = '5067771509'
 
@@ -13,19 +13,24 @@ SLIPPAGE = 0.0005
 COMMISSION = 0.001
 RISK_PER_TRADE = 0.02          # 2% مخاطرة لكل صفقة
 INITIAL_CAPITAL = 1000.0
-ENTRY_SCORE = 90               # عتبة أعلى
+
+# --- المعاملات المعدلة ---
+ENTRY_SCORE = 87               # عتبة وسط بين 85 و 90
+TP_ATR_MULT = 3.0              # هدف 3x ATR بدلاً من 2.5
+
+# --- باقي الإعدادات (ثابتة) ---
 SYMBOLS_LIMIT = 800
 CANDLES_LIMIT = 4000
 MAX_HOLD_CANDLES = 48
-TP_ATR_MULT = 2.5
-SL_ATR_MULT = 1.0              # وقف 1 ATR كامل
-TRAIL_ACTIVATION = 1.5         # تعادل بعد 1.5 ATR
+SL_ATR_MULT = 1.0
+TRAIL_ACTIVATION = 1.5
 TRAIL_SL_ATR = 1.0
 
 EXCLUDED_ASSETS = {'BTC', 'ETH'}
 STABLECOINS = {'USDC', 'BUSD', 'USDP', 'TUSD', 'DAI', 'USDD', 'FDUSD', 'USTC'}
 
-class SniperV28:
+# ==================== كلاس القناص ====================
+class SniperV29:
     def __init__(self):
         self.exchange = ccxt.binance({'enableRateLimit': True})
         self.bot = Bot(token=TELEGRAM_TOKEN)
@@ -41,8 +46,9 @@ class SniperV28:
             filtered.append(sym)
         return filtered
 
+    # ---------------- المؤشرات الفنية ----------------
     def add_indicators(self, df):
-        # RSI
+        # RSI 14
         delta = df['close'].diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
@@ -53,19 +59,19 @@ class SniperV28:
         df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
         df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
 
-        # ATR
+        # ATR 14
         hl = df['high'] - df['low']
         hc = (df['high'] - df['close'].shift()).abs()
         lc = (df['low'] - df['close'].shift()).abs()
         tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
         df['atr'] = tr.rolling(14).mean()
 
-        # Bollinger
+        # Bollinger Bands Width
         df['sma20'] = df['close'].rolling(20).mean()
         df['std20'] = df['close'].rolling(20).std()
         df['bb_width'] = (df['std20'] * 4) / df['sma20']
 
-        # ADX
+        # ADX 14
         hd = df['high'].diff()
         ld = df['low'].diff()
         pdm = np.where((hd > ld) & (hd > 0), hd, 0.0)
@@ -76,19 +82,20 @@ class SniperV28:
         dx = (abs(pdi - ndi) / (pdi + ndi)) * 100
         df['adx'] = dx.rolling(14).mean()
 
-        # حجم
+        # حجم نسبي
         df['vol_sma20'] = df['volume'].rolling(20).mean()
         df['vol_ratio'] = df['volume'] / df['vol_sma20']
 
         return df
 
+    # ---------------- نظام السكور (0-100) ----------------
     def get_score(self, df, i):
         """
-        نظام نقاط محسّن: التركيز على العوامل الأقوى
+        يُقيّم الشمعة i من 0 إلى 100 نقطة.
         """
         score = 0
 
-        # 1. حجم تداول استثنائي (أهم عامل: 35 نقطة)
+        # 1) حجم تداول استثنائي (أعلى عامل: 35 نقطة)
         vol_ratio = df['vol_ratio'].iloc[i]
         if vol_ratio > 5.0:
             score += 35
@@ -101,7 +108,7 @@ class SniperV28:
         elif vol_ratio > 2.0:
             score += 10
 
-        # 2. ضيق بولينجر (25 نقطة)
+        # 2) انفجار من ضيق بولينجر (25 نقطة)
         min_width = df['bb_width'].iloc[max(0, i-50):i].min()
         if min_width > 0:
             ratio = df['bb_width'].iloc[i] / min_width
@@ -112,7 +119,7 @@ class SniperV28:
             elif ratio < 1.3:
                 score += 10
 
-        # 3. ADX قوي ومتزايد (20 نقطة)
+        # 3) ADX قوي ومتزايد (20 نقطة)
         if df['adx'].iloc[i] > 35:
             score += 15
         elif df['adx'].iloc[i] > 25:
@@ -120,22 +127,21 @@ class SniperV28:
         if i >= 2 and df['adx'].iloc[i] > df['adx'].iloc[i-2]:
             score += 5
 
-        # 4. ترتيب المتوسطات EMA20 > EMA50 > EMA200 (15 نقطة)
+        # 4) ترتيب المتوسطات تصاعدي (15 نقطة)
         if df['ema20'].iloc[i] > df['ema50'].iloc[i] > df['ema200'].iloc[i]:
             score += 15
         elif df['ema20'].iloc[i] > df['ema200'].iloc[i] and df['close'].iloc[i] > df['ema20'].iloc[i]:
             score += 8
 
-        # 5. RSI زخم (10 نقاط)
+        # 5) RSI زخم شرائي (10 نقاط)
         if 55 < df['rsi'].iloc[i] < 78:
             score += 10
         elif 50 < df['rsi'].iloc[i] < 82:
             score += 5
 
-        # 6. تأكيد شمعة تالية (يُحسب خارجياً)
-
         return min(score, 100)
 
+    # ---------------- محاكاة الخروج ----------------
     def simulate_exit(self, df, entry_idx, entry_price, tp, atr):
         sl_price = entry_price - (atr * SL_ATR_MULT)
         trailing_active = False
@@ -144,23 +150,28 @@ class SniperV28:
         for j in range(entry_idx + 1, min(entry_idx + MAX_HOLD_CANDLES + 1, len(df))):
             high, low = df['high'].iloc[j], df['low'].iloc[j]
 
+            # تفعيل التعادل بعد الحركة الإيجابية
             if not trailing_active:
                 if high >= entry_price + atr * TRAIL_ACTIVATION:
                     trailing_active = True
                     trailing_sl = entry_price
             else:
+                # وقف متحرك بعد التعادل
                 potential_sl = high - atr * TRAIL_SL_ATR
                 if potential_sl > trailing_sl:
                     trailing_sl = potential_sl
 
+            # فحص الخروج
             if low <= trailing_sl:
                 return trailing_sl * (1 - SLIPPAGE), 'LOSS', j
             if high >= tp:
                 return tp * (1 - SLIPPAGE), 'WIN', j
 
+        # خروج اضطراري بعد 48 ساعة
         last = min(entry_idx + MAX_HOLD_CANDLES, len(df) - 1)
         return df['close'].iloc[last] * (1 - SLIPPAGE), 'TIME_EXIT', last
 
+    # ---------------- باك تست لرمز واحد ----------------
     async def backtest_symbol(self, symbol):
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, '1h', limit=CANDLES_LIMIT)
@@ -173,7 +184,7 @@ class SniperV28:
             for i in range(200, len(df) - MAX_HOLD_CANDLES - 1):
                 score = self.get_score(df, i)
 
-                # تأكيد شمعة تالية: يضيف حتى 10 نقاط
+                # تأكيد إضافي من الشمعة التالية (حتى 10 نقاط)
                 if i+1 < len(df):
                     if df['high'].iloc[i+1] > df['high'].iloc[i]:
                         score += 7
@@ -186,6 +197,7 @@ class SniperV28:
                 atr = df['atr'].iloc[i]
                 if atr <= 0: continue
 
+                # الدخول بسعر افتتاح شمعة التأكيد
                 entry_price = df['open'].iloc[i+1] * (1 + SLIPPAGE)
                 tp = entry_price + (atr * TP_ATR_MULT)
 
@@ -209,8 +221,9 @@ class SniperV28:
         except:
             return []
 
+    # ---------------- التشغيل الرئيسي ----------------
     async def run(self):
-        await self.bot.send_message(chat_id=CHAT_ID, text="🎯 V28: سكور معدّل بأوزان جديدة + حساب واقعي...")
+        await self.bot.send_message(chat_id=CHAT_ID, text="🎯 V29: هدف 3 ATR + عتبة سكور 87...")
 
         markets = self.exchange.load_markets()
         all_symbols = [s for s in markets if markets[s]['active']]
@@ -225,15 +238,16 @@ class SniperV28:
             for r in res: all_trades.extend(r)
 
         if not all_trades:
-            await self.bot.send_message(chat_id=CHAT_ID, text="⚠️ لا توجد صفقات.")
+            await self.bot.send_message(chat_id=CHAT_ID, text="⚠️ لا توجد أي صفقة. جرب خفض عتبة السكور.")
             return
 
-        # ✅ الحساب الواقعي: المخاطرة 2% من الرصيد لكل صفقة
+        # --- حساب واقعي (2% مخاطرة من الرصيد لكل صفقة) ---
         wallet = INITIAL_CAPITAL
         for t in all_trades:
             trade_return = (t['pnl_pct'] / 100) * RISK_PER_TRADE
             wallet *= (1 + trade_return)
 
+        # --- إحصائيات ---
         wins = [t for t in all_trades if t['result'] == 'WIN']
         losses = [t for t in all_trades if t['result'] == 'LOSS']
         exits = [t for t in all_trades if t['result'] == 'TIME_EXIT']
@@ -245,24 +259,28 @@ class SniperV28:
         total_losses = abs(sum(t['pnl_pct'] for t in losses))
         profit_factor = total_wins / total_losses if total_losses else float('inf')
 
+        # --- تقرير تيليجرام ---
         text = (
-            f"📊 *V28 - واقعي (2% مخاطرة):*\n\n"
-            f"💰 النهائي: {wallet:.2f}$ ({((wallet/INITIAL_CAPITAL)-1)*100:.2f}%)\n"
-            f"🎯 الصفقات: {len(all_trades)}\n"
-            f"🏆 نجاح: {(len(wins)/len(all_trades)*100):.2f}% ({len(wins)})\n"
+            f"📊 *V29 - هدف 3x ATR | سكور 87:*\n\n"
+            f"💰 الرصيد النهائي: {wallet:.2f}$\n"
+            f"📈 العائد: {((wallet/INITIAL_CAPITAL)-1)*100:.2f}%\n"
+            f"🎯 عدد الصفقات: {len(all_trades)}\n"
+            f"🏆 نسبة النجاح: {(len(wins)/len(all_trades)*100):.2f}% ({len(wins)})\n"
             f"❌ خسائر: {len(losses)} | ⏳ زمنية: {len(exits)}\n"
-            f"📊 متوسط ربح: {avg_win:.2f}% | خسارة: {avg_loss:.2f}%\n"
+            f"📊 متوسط الربح: {avg_win:.2f}% | متوسط الخسارة: {avg_loss:.2f}%\n"
             f"📐 عامل الربح: {profit_factor:.2f}\n"
-            f"⏱️ متوسط المدة: {avg_dur:.1f}h"
+            f"⏱️ متوسط المدة: {avg_dur:.1f} ساعة"
         )
         await self.bot.send_message(chat_id=CHAT_ID, text=text)
 
-        csv_path = "v28_trades.csv"
+        # --- إرسال ملف CSV ---
+        csv_path = "v29_trades.csv"
         pd.DataFrame(all_trades).to_csv(csv_path, index=False, encoding='utf-8-sig')
         with open(csv_path, 'rb') as f:
-            await self.bot.send_document(chat_id=CHAT_ID, document=f, filename=csv_path,
-                                         caption="📎 CSV صفقات V28")
+            await self.bot.send_document(chat_id=CHAT_ID, document=f,
+                                         filename=csv_path, caption="📎 CSV صفقات V29")
         os.remove(csv_path)
 
+# ==================== بدء التشغيل ====================
 if __name__ == "__main__":
-    asyncio.run(SniperV28().run())
+    asyncio.run(SniperV29().run())

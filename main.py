@@ -6,15 +6,15 @@ import os
 from datetime import timedelta
 from telegram import Bot
 
-# إعدادات
-TELEGRAM_TOKEN = 'YOUR_TOKEN'
-CHAT_ID = 'YOUR_CHAT_ID'
+# ==================== إعدادات ====================
+TELEGRAM_TOKEN = '8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo'
+CHAT_ID = '5067771509'
 
 SLIPPAGE = 0.0005
 COMMISSION = 0.001
 RISK_PER_TRADE = 0.02
 INITIAL_CAPITAL = 1000.0
-ENTRY_SCORE = 88                  # عتبة عالية
+ENTRY_SCORE = 88
 SYMBOLS_LIMIT = 800
 CANDLES_LIMIT = 4000
 MAX_HOLD_CANDLES = 48
@@ -23,10 +23,57 @@ SL_ATR_MULT = 1.0
 TRAIL_ACTIVATION = 1.5
 ADX_THRESHOLD = 25
 
+# قائمة العملات الكبيرة والمستقرة للاستبعاد
+EXCLUDED_ASSETS = {
+    'BTC', 'ETH', 'BNB', 'XRP', 'ADA', 'DOGE', 'SOL', 'DOT', 'MATIC', 
+    'LTC', 'TRX', 'AVAX', 'LINK', 'UNI', 'ATOM', 'XMR', 'ETC', 'BCH',
+    'USDC', 'BUSD', 'USDP', 'TUSD', 'DAI', 'USDD', 'FDUSD',
+    'WBTC', 'WETH', 'STETH', 'BTCB'  # عملات مغلفة
+}
+
+# عملات مستقرة يجب تجاهلها تماماً
+STABLECOINS = {'USDC', 'BUSD', 'USDP', 'TUSD', 'DAI', 'USDD', 'FDUSD', 'USTC'}
+
 class SniperV25:
     def __init__(self):
         self.exchange = ccxt.binance({'enableRateLimit': True})
         self.bot = Bot(token=TELEGRAM_TOKEN)
+
+    def filter_symbols(self, all_symbols):
+        """
+        فلترة العملات: نستبعد الكبيرة جداً والمستقرة والتي لا تنتهي بـ USDT.
+        """
+        filtered = []
+        excluded_count = 0
+        
+        for sym in all_symbols:
+            # 1) يجب أن تنتهي بـ /USDT
+            if not sym.endswith('/USDT'):
+                excluded_count += 1
+                continue
+            
+            # 2) استخراج رمز العملة الأساسية (مثلاً BTC من BTC/USDT)
+            base_asset = sym.replace('/USDT', '')
+            
+            # 3) تجاهل العملات المستقرة تماماً
+            if base_asset in STABLECOINS:
+                excluded_count += 1
+                continue
+            
+            # 4) تجاهل العملات الكبيرة جداً
+            if base_asset in EXCLUDED_ASSETS:
+                excluded_count += 1
+                continue
+            
+            # 5) تجاهل العملات ذات الأسماء الغريبة أو المنخفضة جداً (اختياري)
+            if base_asset.endswith('DOWN') or base_asset.endswith('UP') or base_asset.endswith('BULL') or base_asset.endswith('BEAR'):
+                excluded_count += 1
+                continue
+            
+            filtered.append(sym)
+        
+        print(f"🔍 تم استبعاد {excluded_count} عملة، المتبقي للفحص: {len(filtered)}")
+        return filtered
 
     def add_indicators(self, df):
         # RSI 14
@@ -63,28 +110,22 @@ class SniperV25:
         return df
 
     def get_score(self, df, i):
-        # ADX إجباري
+        # شــــروط إجباريــــة
         if df['adx'].iloc[i] < ADX_THRESHOLD:
             return 0
-        # EMA50 يجب أن يكون فوق EMA200 (اتجاه صاعد مؤكد)
         if df['ema50'].iloc[i] <= df['ema200'].iloc[i]:
             return 0
-        # السعر فوق EMA200
         if df['close'].iloc[i] <= df['ema200'].iloc[i]:
             return 0
 
         score = 0
-        # حجم تداول > 3x المتوسط
         vol_mean = df['volume'].iloc[max(0,i-20):i].mean()
         if vol_mean > 0 and df['volume'].iloc[i] > vol_mean * 3:
             score += 25
-        # RSI بين 60 و 75
         if 60 < df['rsi'].iloc[i] < 75:
             score += 25
-        # سعر فوق EMA200 (تأكيد إضافي)
         if df['close'].iloc[i] > df['ema200'].iloc[i]:
             score += 25
-        # انفجار من ضيق بولينجر
         min_width = df['bb_width'].iloc[max(0,i-50):i].min()
         if min_width > 0 and df['bb_width'].iloc[i] < min_width * 1.3:
             score += 25
@@ -150,9 +191,14 @@ class SniperV25:
             return []
 
     async def run(self):
-        await self.bot.send_message(chat_id=CHAT_ID, text="🎯 V25: تشغيل القناص بمعايير مشددة...")
+        await self.bot.send_message(chat_id=CHAT_ID, text="🎯 V25: فحص العملات المتوسطة والصغيرة فقط...")
+
         markets = self.exchange.load_markets()
-        symbols = [s for s in markets if '/USDT' in s and markets[s]['active']][:SYMBOLS_LIMIT]
+        all_symbols = [s for s in markets if markets[s]['active']]
+        symbols = self.filter_symbols(all_symbols)[:SYMBOLS_LIMIT]
+
+        await self.bot.send_message(chat_id=CHAT_ID, text=f"🔍 سيتم فحص {len(symbols)} عملة (بعد استبعاد الكبيرة والمستقرة).")
+
         all_trades = []
         for i in range(0, len(symbols), 50):
             batch = symbols[i:i+50]
@@ -161,10 +207,10 @@ class SniperV25:
             for r in res: all_trades.extend(r)
 
         if not all_trades:
-            await self.bot.send_message(chat_id=CHAT_ID, text="⚠️ لا توجد صفقات")
+            await self.bot.send_message(chat_id=CHAT_ID, text="⚠️ لم تظهر أي فرصة مطابقة للشروط.")
             return
 
-        # حساب تراكمي
+        # حساب تراكمي واقعي
         wallet = INITIAL_CAPITAL
         for t in all_trades:
             wallet *= (1 + t['pnl_pct']/100)
@@ -178,25 +224,24 @@ class SniperV25:
         avg_dur = np.mean([t['duration_hours'] for t in all_trades])
 
         text = (
-            f"📊 V25 نتائج:\n"
-            f"💰 النهائي: {wallet:.2f}$ (الربح: {profit:.2f}$)\n"
-            f"📈 العائد: {(wallet/INITIAL_CAPITAL -1)*100:.2f}%\n"
-            f"🎯 الصفقات: {len(all_trades)}\n"
-            f"🏆 النجاح: {len(wins)/len(all_trades)*100:.2f}% ({len(wins)})\n"
-            f"❌ خسائر: {len(losses)} | ⏳ زمنية: {len(exits)}\n"
-            f"📊 متوسط ربح: {avg_win:.2f}% / خسارة: {avg_loss:.2f}%\n"
-            f"⏱️ مدة: {avg_dur:.1f} ساعة"
+            f"📊 *نتائج V25 (عملات صغيرة ومتوسطة):*\n\n"
+            f"💰 الرصيد النهائي: {wallet:.2f}$\n"
+            f"📈 الربح/الخسارة: {profit:.2f}$ ({((wallet/INITIAL_CAPITAL)-1)*100:.2f}%)\n"
+            f"🎯 عدد الصفقات: {len(all_trades)}\n"
+            f"🏆 نسبة النجاح: {(len(wins)/len(all_trades)*100):.2f}% ({len(wins)} رابحة)\n"
+            f"❌ خسائر: {len(losses)} | ⏳ مخارج زمنية: {len(exits)}\n"
+            f"📊 متوسط الربح: {avg_win:.2f}% | متوسط الخسارة: {avg_loss:.2f}%\n"
+            f"⏱️ متوسط المدة: {avg_dur:.1f} ساعة"
         )
         await self.bot.send_message(chat_id=CHAT_ID, text=text)
 
-        # CSV
-        csv_file = 'v25_trades.csv'
-        df_csv = pd.DataFrame(all_trades)
-        df_csv.to_csv(csv_file, index=False)
-        with open(csv_file, 'rb') as f:
-            await self.bot.send_document(chat_id=CHAT_ID, document=f, filename=csv_file,
-                                         caption="تقرير V25 التفصيلي")
-        os.remove(csv_file)
+        # إرسال CSV
+        csv_path = "v25_altcoins_trades.csv"
+        pd.DataFrame(all_trades).to_csv(csv_path, index=False, encoding='utf-8-sig')
+        with open(csv_path, 'rb') as f:
+            await self.bot.send_document(chat_id=CHAT_ID, document=f,
+                                         filename=csv_path, caption="📎 ملف CSV للصفقات (عملات غير كبيرة)")
+        os.remove(csv_path)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     asyncio.run(SniperV25().run())

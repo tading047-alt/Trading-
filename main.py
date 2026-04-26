@@ -11,21 +11,21 @@ CHAT_ID = '5067771509'
 
 SLIPPAGE = 0.0005
 COMMISSION = 0.001
-RISK_PER_TRADE = 0.02
+RISK_PER_TRADE = 0.02          # 2% مخاطرة لكل صفقة
 INITIAL_CAPITAL = 1000.0
-ENTRY_SCORE = 85                # عتبة عالية لكن بدون شروط إجبارية
+ENTRY_SCORE = 90               # عتبة أعلى
 SYMBOLS_LIMIT = 800
 CANDLES_LIMIT = 4000
 MAX_HOLD_CANDLES = 48
 TP_ATR_MULT = 2.5
-INITIAL_SL_ATR = 0.5
-TRAIL_ACTIVATION = 0.7
+SL_ATR_MULT = 1.0              # وقف 1 ATR كامل
+TRAIL_ACTIVATION = 1.5         # تعادل بعد 1.5 ATR
 TRAIL_SL_ATR = 1.0
 
 EXCLUDED_ASSETS = {'BTC', 'ETH'}
 STABLECOINS = {'USDC', 'BUSD', 'USDP', 'TUSD', 'DAI', 'USDD', 'FDUSD', 'USTC'}
 
-class SniperV27:
+class SniperV28:
     def __init__(self):
         self.exchange = ccxt.binance({'enableRateLimit': True})
         self.bot = Bot(token=TELEGRAM_TOKEN)
@@ -42,7 +42,7 @@ class SniperV27:
         return filtered
 
     def add_indicators(self, df):
-        # RSI 14
+        # RSI
         delta = df['close'].diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
@@ -54,123 +54,92 @@ class SniperV27:
         df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
 
         # ATR
-        high_low = df['high'] - df['low']
-        high_close = (df['high'] - df['close'].shift()).abs()
-        low_close = (df['low'] - df['close'].shift()).abs()
-        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        hl = df['high'] - df['low']
+        hc = (df['high'] - df['close'].shift()).abs()
+        lc = (df['low'] - df['close'].shift()).abs()
+        tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
         df['atr'] = tr.rolling(14).mean()
 
-        # Bollinger width
+        # Bollinger
         df['sma20'] = df['close'].rolling(20).mean()
         df['std20'] = df['close'].rolling(20).std()
         df['bb_width'] = (df['std20'] * 4) / df['sma20']
 
         # ADX
-        high_diff = df['high'].diff()
-        low_diff = df['low'].diff()
-        plus_dm = np.where((high_diff > low_diff) & (high_diff > 0), high_diff, 0.0)
-        minus_dm = np.where((low_diff > high_diff) & (low_diff > 0), low_diff, 0.0)
+        hd = df['high'].diff()
+        ld = df['low'].diff()
+        pdm = np.where((hd > ld) & (hd > 0), hd, 0.0)
+        ndm = np.where((ld > hd) & (ld > 0), ld, 0.0)
         atr14 = tr.rolling(14).mean()
-        plus_di = 100 * (pd.Series(plus_dm).rolling(14).mean() / atr14)
-        minus_di = 100 * (pd.Series(minus_dm).rolling(14).mean() / atr14)
-        dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
+        pdi = 100 * (pd.Series(pdm).rolling(14).mean() / atr14)
+        ndi = 100 * (pd.Series(ndm).rolling(14).mean() / atr14)
+        dx = (abs(pdi - ndi) / (pdi + ndi)) * 100
         df['adx'] = dx.rolling(14).mean()
 
         # حجم
         df['vol_sma20'] = df['volume'].rolling(20).mean()
         df['vol_ratio'] = df['volume'] / df['vol_sma20']
-        df['vol_max50'] = df['volume'].rolling(50).max()
 
-        # MACD
-        ema12 = df['close'].ewm(span=12, adjust=False).mean()
-        ema26 = df['close'].ewm(span=26, adjust=False).mean()
-        df['macd_line'] = ema12 - ema26
-        df['macd_signal'] = df['macd_line'].ewm(span=9, adjust=False).mean()
-        df['macd_hist'] = df['macd_line'] - df['macd_signal']
-
-        # قوة الشمعة
-        df['body'] = abs(df['close'] - df['open'])
-        df['candle_range'] = df['high'] - df['low']
-        df['body_ratio'] = df['body'] / df['candle_range'].replace(0, np.nan)
         return df
 
     def get_score(self, df, i):
         """
-        نظام نقاط بحت من 0 إلى 100. لا شروط إجبارية.
+        نظام نقاط محسّن: التركيز على العوامل الأقوى
         """
         score = 0
 
-        # 1. ADX قوي ومتزايد (حتى 20 نقطة)
-        if df['adx'].iloc[i] > 30:
+        # 1. حجم تداول استثنائي (أهم عامل: 35 نقطة)
+        vol_ratio = df['vol_ratio'].iloc[i]
+        if vol_ratio > 5.0:
+            score += 35
+        elif vol_ratio > 4.0:
+            score += 30
+        elif vol_ratio > 3.0:
+            score += 25
+        elif vol_ratio > 2.5:
+            score += 18
+        elif vol_ratio > 2.0:
+            score += 10
+
+        # 2. ضيق بولينجر (25 نقطة)
+        min_width = df['bb_width'].iloc[max(0, i-50):i].min()
+        if min_width > 0:
+            ratio = df['bb_width'].iloc[i] / min_width
+            if ratio < 1.1:
+                score += 25
+            elif ratio < 1.2:
+                score += 18
+            elif ratio < 1.3:
+                score += 10
+
+        # 3. ADX قوي ومتزايد (20 نقطة)
+        if df['adx'].iloc[i] > 35:
             score += 15
         elif df['adx'].iloc[i] > 25:
             score += 10
-        elif df['adx'].iloc[i] > 20:
-            score += 5
-        if i >= 3 and df['adx'].iloc[i] > df['adx'].iloc[i-3]:
+        if i >= 2 and df['adx'].iloc[i] > df['adx'].iloc[i-2]:
             score += 5
 
-        # 2. ترتيب المتوسطات (حتى 15 نقطة)
-        if df['ema20'].iloc[i] > df['ema50'].iloc[i]:
-            score += 5
-        if df['ema50'].iloc[i] > df['ema200'].iloc[i]:
-            score += 5
+        # 4. ترتيب المتوسطات EMA20 > EMA50 > EMA200 (15 نقطة)
         if df['ema20'].iloc[i] > df['ema50'].iloc[i] > df['ema200'].iloc[i]:
-            score += 5  # مكافأة إضافية للترتيب المثالي
-
-        # 3. حجم تداول استثنائي (حتى 25 نقطة)
-        if df['vol_ratio'].iloc[i] > 4.0:
-            score += 25
-        elif df['vol_ratio'].iloc[i] > 3.0:
-            score += 20
-        elif df['vol_ratio'].iloc[i] > 2.0:
             score += 15
-        elif df['vol_ratio'].iloc[i] > 1.5:
-            score += 5
-
-        # 4. RSI زخم (حتى 15 نقطة)
-        if 55 < df['rsi'].iloc[i] < 75:
-            score += 15
-        elif 50 < df['rsi'].iloc[i] < 80:
+        elif df['ema20'].iloc[i] > df['ema200'].iloc[i] and df['close'].iloc[i] > df['ema20'].iloc[i]:
             score += 8
 
-        # 5. ضيق بولينجر (حتى 15 نقطة)
-        min_width_50 = df['bb_width'].iloc[max(0, i-50):i].min()
-        if min_width_50 > 0:
-            ratio = df['bb_width'].iloc[i] / min_width_50
-            if ratio < 1.1:
-                score += 15
-            elif ratio < 1.2:
-                score += 10
-            elif ratio < 1.3:
-                score += 5
+        # 5. RSI زخم (10 نقاط)
+        if 55 < df['rsi'].iloc[i] < 78:
+            score += 10
+        elif 50 < df['rsi'].iloc[i] < 82:
+            score += 5
 
-        # 6. شمعة صاعدة قوية (حتى 15 نقطة)
-        if df['close'].iloc[i] > df['open'].iloc[i]:
-            candle_score = 0
-            if df['body_ratio'].iloc[i] > 0.7:
-                candle_score += 10
-            if df['close'].iloc[i] >= df['high'].iloc[i] * 0.99:
-                candle_score += 5
-            score += candle_score
-
-        # 7. MACD تأكيد (حتى 10 نقاط)
-        if df['macd_line'].iloc[i] > 0:
-            score += 3
-        if df['macd_line'].iloc[i] > df['macd_signal'].iloc[i]:
-            score += 4
-        if df['macd_hist'].iloc[i] > 0:
-            score += 3
-
-        # 8. تأكيد شمعة تالية (حتى 15 نقطة - يفحص خارجياً)
-        # سنضيف هذا لاحقاً في منطق الدخول
+        # 6. تأكيد شمعة تالية (يُحسب خارجياً)
 
         return min(score, 100)
 
     def simulate_exit(self, df, entry_idx, entry_price, tp, atr):
-        initial_sl = entry_price - (atr * INITIAL_SL_ATR)
+        sl_price = entry_price - (atr * SL_ATR_MULT)
         trailing_active = False
-        trailing_sl = initial_sl
+        trailing_sl = sl_price
 
         for j in range(entry_idx + 1, min(entry_idx + MAX_HOLD_CANDLES + 1, len(df))):
             high, low = df['high'].iloc[j], df['low'].iloc[j]
@@ -189,8 +158,8 @@ class SniperV27:
             if high >= tp:
                 return tp * (1 - SLIPPAGE), 'WIN', j
 
-        last_idx = min(entry_idx + MAX_HOLD_CANDLES, len(df) - 1)
-        return df['close'].iloc[last_idx] * (1 - SLIPPAGE), 'TIME_EXIT', last_idx
+        last = min(entry_idx + MAX_HOLD_CANDLES, len(df) - 1)
+        return df['close'].iloc[last] * (1 - SLIPPAGE), 'TIME_EXIT', last
 
     async def backtest_symbol(self, symbol):
         try:
@@ -203,13 +172,13 @@ class SniperV27:
             trades = []
             for i in range(200, len(df) - MAX_HOLD_CANDLES - 1):
                 score = self.get_score(df, i)
-                
-                # تأكيد شمعة تالية يضيف نقاط
+
+                # تأكيد شمعة تالية: يضيف حتى 10 نقاط
                 if i+1 < len(df):
                     if df['high'].iloc[i+1] > df['high'].iloc[i]:
-                        score += 15  # تأكيد الاختراق
+                        score += 7
                     if df['close'].iloc[i+1] > df['close'].iloc[i]:
-                        score += 5   # تأكيد إضافي
+                        score += 3
 
                 if score < ENTRY_SCORE:
                     continue
@@ -241,12 +210,11 @@ class SniperV27:
             return []
 
     async def run(self):
-        await self.bot.send_message(chat_id=CHAT_ID, text="🎯 V27: سكور مرن (0-100) بعتبة 85...")
+        await self.bot.send_message(chat_id=CHAT_ID, text="🎯 V28: سكور معدّل بأوزان جديدة + حساب واقعي...")
 
         markets = self.exchange.load_markets()
         all_symbols = [s for s in markets if markets[s]['active']]
         symbols = self.filter_symbols(all_symbols)[:SYMBOLS_LIMIT]
-
         await self.bot.send_message(chat_id=CHAT_ID, text=f"🔍 فحص {len(symbols)} عملة...")
 
         all_trades = []
@@ -260,9 +228,11 @@ class SniperV27:
             await self.bot.send_message(chat_id=CHAT_ID, text="⚠️ لا توجد صفقات.")
             return
 
+        # ✅ الحساب الواقعي: المخاطرة 2% من الرصيد لكل صفقة
         wallet = INITIAL_CAPITAL
         for t in all_trades:
-            wallet *= (1 + t['pnl_pct'] / 100)
+            trade_return = (t['pnl_pct'] / 100) * RISK_PER_TRADE
+            wallet *= (1 + trade_return)
 
         wins = [t for t in all_trades if t['result'] == 'WIN']
         losses = [t for t in all_trades if t['result'] == 'LOSS']
@@ -276,7 +246,7 @@ class SniperV27:
         profit_factor = total_wins / total_losses if total_losses else float('inf')
 
         text = (
-            f"📊 *V27 - سكور مرن:*\n\n"
+            f"📊 *V28 - واقعي (2% مخاطرة):*\n\n"
             f"💰 النهائي: {wallet:.2f}$ ({((wallet/INITIAL_CAPITAL)-1)*100:.2f}%)\n"
             f"🎯 الصفقات: {len(all_trades)}\n"
             f"🏆 نجاح: {(len(wins)/len(all_trades)*100):.2f}% ({len(wins)})\n"
@@ -287,12 +257,12 @@ class SniperV27:
         )
         await self.bot.send_message(chat_id=CHAT_ID, text=text)
 
-        csv_path = "v27_trades.csv"
+        csv_path = "v28_trades.csv"
         pd.DataFrame(all_trades).to_csv(csv_path, index=False, encoding='utf-8-sig')
         with open(csv_path, 'rb') as f:
             await self.bot.send_document(chat_id=CHAT_ID, document=f, filename=csv_path,
-                                         caption="📎 CSV صفقات V27")
+                                         caption="📎 CSV صفقات V28")
         os.remove(csv_path)
 
 if __name__ == "__main__":
-    asyncio.run(SniperV27().run())
+    asyncio.run(SniperV28().run())

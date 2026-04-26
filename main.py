@@ -5,30 +5,34 @@ import asyncio
 import os
 from telegram import Bot
 
-# ==================== إعدادات V33 ====================
+# ==================== إعدادات V34 ====================
 TELEGRAM_TOKEN = '8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo'
 CHAT_ID = '5067771509'
 
 SLIPPAGE = 0.0005
 COMMISSION = 0.001
-RISK_PER_TRADE = 0.02
 INITIAL_CAPITAL = 1000.0
 
-# --- تعديلات V33 ---
-ENTRY_SCORE = 87               # أقل قليلاً لزيادة الفرص (كان 90)
-CANDLES_LIMIT = 8000           # ضعف الفترة (حوالي 11 شهر)
-SYMBOLS_LIMIT = 1200           # عملات أكثر
+# --- إعدادات متدرجة ---
+BASE_ENTRY_SCORE = 85          # عتبة الدخول الأساسية
+HIGH_CONFIDENCE_SCORE = 90     # عتبة الثقة العالية
+RISK_PER_TRADE_HIGH = 0.02     # مخاطرة 2% للثقة العالية
+RISK_PER_TRADE_BASE = 0.01     # مخاطرة 1% للثقة الأساسية
 
+# --- إعدادات خروج V28 الأصلية ---
 TP_ATR_MULT = 2.5
 SL_ATR_MULT = 1.0
 TRAIL_ACTIVATION = 1.5
 TRAIL_SL_ATR = 1.0
+
+SYMBOLS_LIMIT = 1200
+CANDLES_LIMIT = 8000
 MAX_HOLD_CANDLES = 48
 
 EXCLUDED_ASSETS = {'BTC', 'ETH'}
 STABLECOINS = {'USDC', 'BUSD', 'USDP', 'TUSD', 'DAI', 'USDD', 'FDUSD', 'USTC'}
 
-class FinalSniperV33:
+class FinalSniperV34:
     def __init__(self):
         self.exchange = ccxt.binance({'enableRateLimit': True})
         self.bot = Bot(token=TELEGRAM_TOKEN)
@@ -148,14 +152,10 @@ class FinalSniperV33:
             df = self.add_indicators(df)
 
             trades = []
-            start_idx = max(200, int(len(df) * 0.2))  # تأكد من وجود بيانات كافية للمؤشرات
+            start_idx = max(200, int(len(df) * 0.2))
             for i in range(start_idx, len(df) - MAX_HOLD_CANDLES - 1):
                 score = self.get_score(df, i)
-                if score < ENTRY_SCORE: continue
-
-                if i+1 < len(df):
-                    if not (df['high'].iloc[i+1] > df['high'].iloc[i] and df['close'].iloc[i+1] > df['close'].iloc[i]):
-                        continue
+                if score < BASE_ENTRY_SCORE: continue
 
                 atr = df['atr'].iloc[i]
                 if atr <= 0: continue
@@ -168,6 +168,9 @@ class FinalSniperV33:
                 net = (gross - 2 * COMMISSION) * 100
                 duration = (df['timestamp'].iloc[exit_idx] - df['timestamp'].iloc[i+1]).total_seconds() / 3600
 
+                # تحديد مستوى الثقة
+                confidence = 'HIGH' if score >= HIGH_CONFIDENCE_SCORE else 'BASE'
+
                 trades.append({
                     'symbol': symbol,
                     'entry_time': df['timestamp'].iloc[i+1],
@@ -177,14 +180,15 @@ class FinalSniperV33:
                     'exit_price': round(exit_price, 8),
                     'result': result,
                     'pnl_pct': round(net, 4),
-                    'score': score
+                    'score': score,
+                    'confidence': confidence
                 })
             return trades
         except:
             return []
 
     async def run(self):
-        await self.bot.send_message(chat_id=CHAT_ID, text="🎯 V33: النسخة النهائية - فترة أطول + عملات أكثر...")
+        await self.bot.send_message(chat_id=CHAT_ID, text="🎯 V34: سكور متدرج + عتبة 85...")
 
         markets = self.exchange.load_markets()
         all_symbols = [s for s in markets if markets[s]['active']]
@@ -202,14 +206,18 @@ class FinalSniperV33:
             await self.bot.send_message(chat_id=CHAT_ID, text="⚠️ لا توجد صفقات.")
             return
 
+        # حساب بمخاطرة متدرجة
         wallet = INITIAL_CAPITAL
         for t in all_trades:
-            trade_return = (t['pnl_pct'] / 100) * RISK_PER_TRADE
+            risk = RISK_PER_TRADE_HIGH if t['confidence'] == 'HIGH' else RISK_PER_TRADE_BASE
+            trade_return = (t['pnl_pct'] / 100) * risk
             wallet *= (1 + trade_return)
 
         wins = [t for t in all_trades if t['result'] == 'WIN']
         losses = [t for t in all_trades if t['result'] == 'LOSS']
         exits = [t for t in all_trades if t['result'] == 'TIME_EXIT']
+        high_trades = [t for t in all_trades if t['confidence'] == 'HIGH']
+
         avg_win = np.mean([t['pnl_pct'] for t in wins]) if wins else 0
         avg_loss = np.mean([t['pnl_pct'] for t in losses]) if losses else 0
         avg_dur = np.mean([t['duration_hours'] for t in all_trades])
@@ -218,30 +226,29 @@ class FinalSniperV33:
         total_losses = abs(sum(t['pnl_pct'] for t in losses))
         profit_factor = total_wins / total_losses if total_losses else float('inf')
 
-        # حساب العائد السنوي التقريبي
         months = CANDLES_LIMIT / (24 * 30)
         annual_return = ((wallet / INITIAL_CAPITAL) - 1) / months * 12 * 100
 
         text = (
-            f"📊 *V33 - النسخة النهائية:*\n\n"
+            f"📊 *V34 - سكور متدرج:*\n\n"
             f"💰 النهائي: {wallet:.2f}$ ({((wallet/INITIAL_CAPITAL)-1)*100:.2f}%)\n"
             f"📈 عائد سنوي تقريبي: {annual_return:.2f}%\n"
             f"🎯 الصفقات: {len(all_trades)}\n"
+            f"⭐ منها عالية الثقة: {len(high_trades)}\n"
             f"🏆 نجاح: {(len(wins)/len(all_trades)*100):.2f}% ({len(wins)})\n"
             f"❌ خسائر: {len(losses)} | ⏳ زمنية: {len(exits)}\n"
             f"📊 متوسط ربح: {avg_win:.2f}% | خسارة: {avg_loss:.2f}%\n"
             f"📐 عامل الربح: {profit_factor:.2f}\n"
-            f"⏱️ متوسط المدة: {avg_dur:.1f}h\n"
-            f"🕒 فترة الاختبار: {months:.1f} أشهر"
+            f"⏱️ متوسط المدة: {avg_dur:.1f}h"
         )
         await self.bot.send_message(chat_id=CHAT_ID, text=text)
 
-        csv_path = "v33_final_trades.csv"
+        csv_path = "v34_graded_trades.csv"
         pd.DataFrame(all_trades).to_csv(csv_path, index=False, encoding='utf-8-sig')
         with open(csv_path, 'rb') as f:
             await self.bot.send_document(chat_id=CHAT_ID, document=f,
-                                         filename=csv_path, caption="📎 CSV صفقات V33 (النهائي)")
+                                         filename=csv_path, caption="📎 CSV صفقات V34")
         os.remove(csv_path)
 
 if __name__ == "__main__":
-    asyncio.run(FinalSniperV33().run())
+    asyncio.run(FinalSniperV34().run())

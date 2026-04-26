@@ -13,7 +13,7 @@ SLIPPAGE = 0.0005
 COMMISSION = 0.001
 RISK_PER_TRADE = 0.02
 INITIAL_CAPITAL = 1000.0
-ENTRY_SCORE = 95
+ENTRY_SCORE = 85                # عتبة عالية لكن بدون شروط إجبارية
 SYMBOLS_LIMIT = 800
 CANDLES_LIMIT = 4000
 MAX_HOLD_CANDLES = 48
@@ -21,33 +21,23 @@ TP_ATR_MULT = 2.5
 INITIAL_SL_ATR = 0.5
 TRAIL_ACTIVATION = 0.7
 TRAIL_SL_ATR = 1.0
-ADX_THRESHOLD = 25
 
-# استبعاد BTC و ETH فقط + العملات المستقرة
-EXCLUDED_ASSETS = {'BTC', 'ETH'}  # فقط العملاقان
-
+EXCLUDED_ASSETS = {'BTC', 'ETH'}
 STABLECOINS = {'USDC', 'BUSD', 'USDP', 'TUSD', 'DAI', 'USDD', 'FDUSD', 'USTC'}
 
-class SniperV26:
+class SniperV27:
     def __init__(self):
         self.exchange = ccxt.binance({'enableRateLimit': True})
         self.bot = Bot(token=TELEGRAM_TOKEN)
 
     def filter_symbols(self, all_symbols):
-        """
-        فلترة العملات: نستبعد فقط BTC, ETH والعملات المستقرة والرموز غير الطبيعية.
-        """
         filtered = []
         for sym in all_symbols:
-            if not sym.endswith('/USDT'):
-                continue
+            if not sym.endswith('/USDT'): continue
             base = sym.replace('/USDT', '')
-            if base in STABLECOINS or base in EXCLUDED_ASSETS:
-                continue
-            if base.endswith(('DOWN', 'UP', 'BULL', 'BEAR')):
-                continue
-            if len(base) > 10:
-                continue
+            if base in STABLECOINS or base in EXCLUDED_ASSETS: continue
+            if base.endswith(('DOWN', 'UP', 'BULL', 'BEAR')): continue
+            if len(base) > 10: continue
             filtered.append(sym)
         return filtered
 
@@ -86,46 +76,96 @@ class SniperV26:
         dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
         df['adx'] = dx.rolling(14).mean()
 
-        # حجم - أعلى 50 شمعة
+        # حجم
+        df['vol_sma20'] = df['volume'].rolling(20).mean()
+        df['vol_ratio'] = df['volume'] / df['vol_sma20']
         df['vol_max50'] = df['volume'].rolling(50).max()
+
+        # MACD
+        ema12 = df['close'].ewm(span=12, adjust=False).mean()
+        ema26 = df['close'].ewm(span=26, adjust=False).mean()
+        df['macd_line'] = ema12 - ema26
+        df['macd_signal'] = df['macd_line'].ewm(span=9, adjust=False).mean()
+        df['macd_hist'] = df['macd_line'] - df['macd_signal']
+
+        # قوة الشمعة
+        df['body'] = abs(df['close'] - df['open'])
+        df['candle_range'] = df['high'] - df['low']
+        df['body_ratio'] = df['body'] / df['candle_range'].replace(0, np.nan)
         return df
 
     def get_score(self, df, i):
-        # شروط إجبارية
-        if df['adx'].iloc[i] < ADX_THRESHOLD:
-            return 0
-        if i >= 3 and df['adx'].iloc[i] <= df['adx'].iloc[i-3]:
-            return 0
-        if not (df['ema20'].iloc[i] > df['ema50'].iloc[i] > df['ema200'].iloc[i]):
-            return 0
-        if df['close'].iloc[i] <= df['ema20'].iloc[i]:
-            return 0
-
+        """
+        نظام نقاط بحت من 0 إلى 100. لا شروط إجبارية.
+        """
         score = 0
 
-        # حجم: أعلى 50 شمعة
-        if df['volume'].iloc[i] >= df['vol_max50'].iloc[i] * 0.95:
-            score += 30
-        elif df['volume'].iloc[i] > df['volume'].iloc[max(0, i-20):i].mean() * 3:
+        # 1. ADX قوي ومتزايد (حتى 20 نقطة)
+        if df['adx'].iloc[i] > 30:
+            score += 15
+        elif df['adx'].iloc[i] > 25:
+            score += 10
+        elif df['adx'].iloc[i] > 20:
+            score += 5
+        if i >= 3 and df['adx'].iloc[i] > df['adx'].iloc[i-3]:
+            score += 5
+
+        # 2. ترتيب المتوسطات (حتى 15 نقطة)
+        if df['ema20'].iloc[i] > df['ema50'].iloc[i]:
+            score += 5
+        if df['ema50'].iloc[i] > df['ema200'].iloc[i]:
+            score += 5
+        if df['ema20'].iloc[i] > df['ema50'].iloc[i] > df['ema200'].iloc[i]:
+            score += 5  # مكافأة إضافية للترتيب المثالي
+
+        # 3. حجم تداول استثنائي (حتى 25 نقطة)
+        if df['vol_ratio'].iloc[i] > 4.0:
+            score += 25
+        elif df['vol_ratio'].iloc[i] > 3.0:
             score += 20
+        elif df['vol_ratio'].iloc[i] > 2.0:
+            score += 15
+        elif df['vol_ratio'].iloc[i] > 1.5:
+            score += 5
 
-        # RSI بين 55 و 72
-        if 55 < df['rsi'].iloc[i] < 72:
-            score += 25
+        # 4. RSI زخم (حتى 15 نقطة)
+        if 55 < df['rsi'].iloc[i] < 75:
+            score += 15
+        elif 50 < df['rsi'].iloc[i] < 80:
+            score += 8
 
-        # انفجار بولينجر
+        # 5. ضيق بولينجر (حتى 15 نقطة)
         min_width_50 = df['bb_width'].iloc[max(0, i-50):i].min()
-        if min_width_50 > 0 and df['bb_width'].iloc[i] < min_width_50 * 1.2:
-            score += 25
+        if min_width_50 > 0:
+            ratio = df['bb_width'].iloc[i] / min_width_50
+            if ratio < 1.1:
+                score += 15
+            elif ratio < 1.2:
+                score += 10
+            elif ratio < 1.3:
+                score += 5
 
-        # شمعة خضراء قوية
+        # 6. شمعة صاعدة قوية (حتى 15 نقطة)
         if df['close'].iloc[i] > df['open'].iloc[i]:
-            candle_range = df['high'].iloc[i] - df['low'].iloc[i]
-            if candle_range > 0:
-                if (df['close'].iloc[i] - df['low'].iloc[i]) / candle_range > 0.8:
-                    score += 20
+            candle_score = 0
+            if df['body_ratio'].iloc[i] > 0.7:
+                candle_score += 10
+            if df['close'].iloc[i] >= df['high'].iloc[i] * 0.99:
+                candle_score += 5
+            score += candle_score
 
-        return score
+        # 7. MACD تأكيد (حتى 10 نقاط)
+        if df['macd_line'].iloc[i] > 0:
+            score += 3
+        if df['macd_line'].iloc[i] > df['macd_signal'].iloc[i]:
+            score += 4
+        if df['macd_hist'].iloc[i] > 0:
+            score += 3
+
+        # 8. تأكيد شمعة تالية (حتى 15 نقطة - يفحص خارجياً)
+        # سنضيف هذا لاحقاً في منطق الدخول
+
+        return min(score, 100)
 
     def simulate_exit(self, df, entry_idx, entry_price, tp, atr):
         initial_sl = entry_price - (atr * INITIAL_SL_ATR)
@@ -163,16 +203,19 @@ class SniperV26:
             trades = []
             for i in range(200, len(df) - MAX_HOLD_CANDLES - 1):
                 score = self.get_score(df, i)
+                
+                # تأكيد شمعة تالية يضيف نقاط
+                if i+1 < len(df):
+                    if df['high'].iloc[i+1] > df['high'].iloc[i]:
+                        score += 15  # تأكيد الاختراق
+                    if df['close'].iloc[i+1] > df['close'].iloc[i]:
+                        score += 5   # تأكيد إضافي
+
                 if score < ENTRY_SCORE:
                     continue
 
-                # تأكيد شمعتين
-                if df['high'].iloc[i+1] <= df['high'].iloc[i]:
-                    continue
-
                 atr = df['atr'].iloc[i]
-                if atr <= 0:
-                    continue
+                if atr <= 0: continue
 
                 entry_price = df['open'].iloc[i+1] * (1 + SLIPPAGE)
                 tp = entry_price + (atr * TP_ATR_MULT)
@@ -198,24 +241,23 @@ class SniperV26:
             return []
 
     async def run(self):
-        await self.bot.send_message(chat_id=CHAT_ID, text="🎯 V26: جميع العملات ما عدا BTC و ETH...")
+        await self.bot.send_message(chat_id=CHAT_ID, text="🎯 V27: سكور مرن (0-100) بعتبة 85...")
 
         markets = self.exchange.load_markets()
         all_symbols = [s for s in markets if markets[s]['active']]
         symbols = self.filter_symbols(all_symbols)[:SYMBOLS_LIMIT]
 
-        await self.bot.send_message(chat_id=CHAT_ID, text=f"🔍 فحص {len(symbols)} عملة (جميعها ما عدا BTC و ETH)...")
+        await self.bot.send_message(chat_id=CHAT_ID, text=f"🔍 فحص {len(symbols)} عملة...")
 
         all_trades = []
         for i in range(0, len(symbols), 50):
             batch = symbols[i:i+50]
             tasks = [self.backtest_symbol(s) for s in batch]
             res = await asyncio.gather(*tasks)
-            for r in res:
-                all_trades.extend(r)
+            for r in res: all_trades.extend(r)
 
         if not all_trades:
-            await self.bot.send_message(chat_id=CHAT_ID, text="⚠️ لا توجد صفقات – الشروط صارمة جداً.")
+            await self.bot.send_message(chat_id=CHAT_ID, text="⚠️ لا توجد صفقات.")
             return
 
         wallet = INITIAL_CAPITAL
@@ -234,7 +276,7 @@ class SniperV26:
         profit_factor = total_wins / total_losses if total_losses else float('inf')
 
         text = (
-            f"📊 *V26 - جميع العملات (بدون BTC/ETH):*\n\n"
+            f"📊 *V27 - سكور مرن:*\n\n"
             f"💰 النهائي: {wallet:.2f}$ ({((wallet/INITIAL_CAPITAL)-1)*100:.2f}%)\n"
             f"🎯 الصفقات: {len(all_trades)}\n"
             f"🏆 نجاح: {(len(wins)/len(all_trades)*100):.2f}% ({len(wins)})\n"
@@ -245,12 +287,12 @@ class SniperV26:
         )
         await self.bot.send_message(chat_id=CHAT_ID, text=text)
 
-        csv_path = "v26_trades.csv"
+        csv_path = "v27_trades.csv"
         pd.DataFrame(all_trades).to_csv(csv_path, index=False, encoding='utf-8-sig')
         with open(csv_path, 'rb') as f:
             await self.bot.send_document(chat_id=CHAT_ID, document=f, filename=csv_path,
-                                         caption="📎 CSV صفقات V26")
+                                         caption="📎 CSV صفقات V27")
         os.remove(csv_path)
 
 if __name__ == "__main__":
-    asyncio.run(SniperV26().run())
+    asyncio.run(SniperV27().run())

@@ -5,7 +5,7 @@ import asyncio
 import os
 from telegram import Bot
 
-# ==================== إعدادات V32 الهجين ====================
+# ==================== إعدادات V33 ====================
 TELEGRAM_TOKEN = '8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo'
 CHAT_ID = '5067771509'
 
@@ -14,23 +14,21 @@ COMMISSION = 0.001
 RISK_PER_TRADE = 0.02
 INITIAL_CAPITAL = 1000.0
 
-# --- إعدادات القناص (V28 الأصلية) ---
-ENTRY_SCORE = 90               # عتبة السكور العالية
+# --- تعديلات V33 ---
+ENTRY_SCORE = 87               # أقل قليلاً لزيادة الفرص (كان 90)
+CANDLES_LIMIT = 8000           # ضعف الفترة (حوالي 11 شهر)
+SYMBOLS_LIMIT = 1200           # عملات أكثر
 
-# --- إعدادات الخروج (V28 الأصلية) ---
 TP_ATR_MULT = 2.5
 SL_ATR_MULT = 1.0
 TRAIL_ACTIVATION = 1.5
 TRAIL_SL_ATR = 1.0
-
-SYMBOLS_LIMIT = 800
-CANDLES_LIMIT = 4000
 MAX_HOLD_CANDLES = 48
 
 EXCLUDED_ASSETS = {'BTC', 'ETH'}
 STABLECOINS = {'USDC', 'BUSD', 'USDP', 'TUSD', 'DAI', 'USDD', 'FDUSD', 'USTC'}
 
-class HybridSniperV32:
+class FinalSniperV33:
     def __init__(self):
         self.exchange = ccxt.binance({'enableRateLimit': True})
         self.bot = Bot(token=TELEGRAM_TOKEN)
@@ -46,7 +44,6 @@ class HybridSniperV32:
             filtered.append(sym)
         return filtered
 
-    # ---------------- مؤشرات V28 الأصلية ----------------
     def add_indicators(self, df):
         # RSI
         delta = df['close'].diff()
@@ -88,11 +85,9 @@ class HybridSniperV32:
 
         return df
 
-    # ---------------- سكور V28 الأصلي ----------------
     def get_score(self, df, i):
         score = 0
 
-        # 1. حجم تداول استثنائي (35 نقطة)
         vol_ratio = df['vol_ratio'].iloc[i]
         if vol_ratio > 5.0: score += 35
         elif vol_ratio > 4.0: score += 30
@@ -100,7 +95,6 @@ class HybridSniperV32:
         elif vol_ratio > 2.5: score += 18
         elif vol_ratio > 2.0: score += 10
 
-        # 2. بولينجر ضيق (25 نقطة)
         min_width = df['bb_width'].iloc[max(0, i-50):i].min()
         if min_width > 0:
             ratio = df['bb_width'].iloc[i] / min_width
@@ -108,22 +102,18 @@ class HybridSniperV32:
             elif ratio < 1.2: score += 18
             elif ratio < 1.3: score += 10
 
-        # 3. ADX قوي ومتزايد (20 نقطة)
         if df['adx'].iloc[i] > 35: score += 15
         elif df['adx'].iloc[i] > 25: score += 10
         if i >= 2 and df['adx'].iloc[i] > df['adx'].iloc[i-2]: score += 5
 
-        # 4. ترتيب المتوسطات (15 نقطة)
         if df['ema20'].iloc[i] > df['ema50'].iloc[i] > df['ema200'].iloc[i]: score += 15
         elif df['close'].iloc[i] > df['ema20'].iloc[i] and df['ema20'].iloc[i] > df['ema200'].iloc[i]: score += 8
 
-        # 5. RSI (10 نقاط)
         if 55 < df['rsi'].iloc[i] < 78: score += 10
         elif 50 < df['rsi'].iloc[i] < 82: score += 5
 
         return min(score, 100)
 
-    # ---------------- خروج V28 الأصلي ----------------
     def simulate_exit(self, df, entry_idx, entry_price, tp, atr):
         sl_price = entry_price - (atr * SL_ATR_MULT)
         trailing_active = False
@@ -149,7 +139,6 @@ class HybridSniperV32:
         last = min(entry_idx + MAX_HOLD_CANDLES, len(df) - 1)
         return df['close'].iloc[last] * (1 - SLIPPAGE), 'TIME_EXIT', last
 
-    # ---------------- باك تست ----------------
     async def backtest_symbol(self, symbol):
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, '1h', limit=CANDLES_LIMIT)
@@ -159,15 +148,14 @@ class HybridSniperV32:
             df = self.add_indicators(df)
 
             trades = []
-            for i in range(200, len(df) - MAX_HOLD_CANDLES - 1):
+            start_idx = max(200, int(len(df) * 0.2))  # تأكد من وجود بيانات كافية للمؤشرات
+            for i in range(start_idx, len(df) - MAX_HOLD_CANDLES - 1):
                 score = self.get_score(df, i)
                 if score < ENTRY_SCORE: continue
 
-                # --- مرشح الحارس (V26): تأكيد فوري بشمعة تالية ---
-                # هذا يسمح فقط لأفضل الفرص بالمرور
                 if i+1 < len(df):
                     if not (df['high'].iloc[i+1] > df['high'].iloc[i] and df['close'].iloc[i+1] > df['close'].iloc[i]):
-                        continue  # فشل التأكيد، الصفقة مرفوضة
+                        continue
 
                 atr = df['atr'].iloc[i]
                 if atr <= 0: continue
@@ -195,14 +183,13 @@ class HybridSniperV32:
         except:
             return []
 
-    # ---------------- تشغيل ----------------
     async def run(self):
-        await self.bot.send_message(chat_id=CHAT_ID, text="🎯 V32: القناص الهجين (V28 × V26) - الأفضل من العالمين...")
+        await self.bot.send_message(chat_id=CHAT_ID, text="🎯 V33: النسخة النهائية - فترة أطول + عملات أكثر...")
 
         markets = self.exchange.load_markets()
         all_symbols = [s for s in markets if markets[s]['active']]
         symbols = self.filter_symbols(all_symbols)[:SYMBOLS_LIMIT]
-        await self.bot.send_message(chat_id=CHAT_ID, text=f"🔍 فحص {len(symbols)} عملة...")
+        await self.bot.send_message(chat_id=CHAT_ID, text=f"🔍 فحص {len(symbols)} عملة على {CANDLES_LIMIT} شمعة...")
 
         all_trades = []
         for i in range(0, len(symbols), 50):
@@ -212,7 +199,7 @@ class HybridSniperV32:
             for r in res: all_trades.extend(r)
 
         if not all_trades:
-            await self.bot.send_message(chat_id=CHAT_ID, text="⚠️ لا توجد صفقات. المرشح صارم جداً.")
+            await self.bot.send_message(chat_id=CHAT_ID, text="⚠️ لا توجد صفقات.")
             return
 
         wallet = INITIAL_CAPITAL
@@ -231,24 +218,30 @@ class HybridSniperV32:
         total_losses = abs(sum(t['pnl_pct'] for t in losses))
         profit_factor = total_wins / total_losses if total_losses else float('inf')
 
+        # حساب العائد السنوي التقريبي
+        months = CANDLES_LIMIT / (24 * 30)
+        annual_return = ((wallet / INITIAL_CAPITAL) - 1) / months * 12 * 100
+
         text = (
-            f"📊 *V32 - الهجين (القناص + الحارس):*\n\n"
+            f"📊 *V33 - النسخة النهائية:*\n\n"
             f"💰 النهائي: {wallet:.2f}$ ({((wallet/INITIAL_CAPITAL)-1)*100:.2f}%)\n"
+            f"📈 عائد سنوي تقريبي: {annual_return:.2f}%\n"
             f"🎯 الصفقات: {len(all_trades)}\n"
             f"🏆 نجاح: {(len(wins)/len(all_trades)*100):.2f}% ({len(wins)})\n"
             f"❌ خسائر: {len(losses)} | ⏳ زمنية: {len(exits)}\n"
             f"📊 متوسط ربح: {avg_win:.2f}% | خسارة: {avg_loss:.2f}%\n"
             f"📐 عامل الربح: {profit_factor:.2f}\n"
-            f"⏱️ متوسط المدة: {avg_dur:.1f}h"
+            f"⏱️ متوسط المدة: {avg_dur:.1f}h\n"
+            f"🕒 فترة الاختبار: {months:.1f} أشهر"
         )
         await self.bot.send_message(chat_id=CHAT_ID, text=text)
 
-        csv_path = "v32_trades.csv"
+        csv_path = "v33_final_trades.csv"
         pd.DataFrame(all_trades).to_csv(csv_path, index=False, encoding='utf-8-sig')
         with open(csv_path, 'rb') as f:
             await self.bot.send_document(chat_id=CHAT_ID, document=f,
-                                         filename=csv_path, caption="📎 CSV صفقات V32 (الهجين)")
+                                         filename=csv_path, caption="📎 CSV صفقات V33 (النهائي)")
         os.remove(csv_path)
 
 if __name__ == "__main__":
-    asyncio.run(HybridSniperV32().run())
+    asyncio.run(FinalSniperV33().run())

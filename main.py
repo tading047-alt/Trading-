@@ -1,34 +1,38 @@
 import pandas as pd
 import os
+import sys
 
-# المسارات
-input_path = os.path.join('data', 'data_results.xlsx')
-output_dir = 'output'
-output_path = os.path.join(output_dir, 'data_results_processed.xlsx')
+def process():
+    # المسارات داخل الحاوية
+    input_file = '/app/data/data_results.xlsx'
+    output_dir = '/app/output'
+    output_file = os.path.join(output_dir, 'final_result.xlsx')
 
-def process_file():
-    # 1. التأكد من وجود مجلد المخرجات
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    
-    # 2. التأكد من وجود ملف المدخلات
-    if not os.path.exists(input_path):
-        print(f"❌ خطأ: الملف غير موجود في المسار: {input_path}")
+    print("--- بدأت العملية ---")
+
+    # 1. التأكد من وجود ملف المدخلات
+    if not os.path.exists(input_file):
+        print(f"❌ خطأ: لم أجد ملف المدخلات في: {input_file}")
+        print("تأكد من وضع ملف data_results.xlsx داخل مجلد data على جهازك.")
         return
 
     try:
-        # 3. قراءة الملف
-        df = pd.read_excel(input_path)
-        print("📖 تم قراءة الملف بنجاح.")
-
-        # يمكنك إضافة أي تعديلات على البيانات هنا (مثلاً: df['جديد'] = 'قيمة')
+        # 2. قراءة الملف
+        print(f"📖 جاري قراءة الملف من {input_file}...")
+        df = pd.read_excel(input_file)
         
-        # 4. حفظ الملف في مجلد المخرجات
-        df.to_excel(output_path, index=False)
-        print(f"✅ تم حفظ الملف بنجاح في: {output_path}")
+        # 3. التأكد من وجود مجلد المخرجات
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            print(f"📁 تم إنشاء مجلد المخرجات: {output_dir}")
+
+        # 4. حفظ الملف
+        df.to_excel(output_file, index=False)
+        print(f"✅ تم حفظ الملف بنجاح في: {output_file}")
+        print("--- انتهت العملية بنجاح ---")
 
     except Exception as e:
-        print(f"❌ حدث خطأ أثناء المعالجة: {e}")
+        print(f"❌ حدث خطأ غير متوقع: {e}")
 
 if __name__ == "__main__":
-    process_file()
+    process()

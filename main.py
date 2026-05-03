@@ -1,36 +1,44 @@
 import pandas as pd
 import os
+import requests
 
-def process_excel():
-    # المسارات داخل الحاوية
-    input_file = '/app/data/data_results.xlsx'
-    output_dir = '/app/output'
+# إعدادات تلغرام
+BOT_TOKEN = 'YOUR_BOT_TOKEN'
+CHAT_ID = 'YOUR_CHAT_ID'
+
+def send_to_telegram(file_path):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
+    try:
+        with open(file_path, 'rb') as file:
+            payload = {'chat_id': CHAT_ID, 'caption': '✅ تم معالجة الملف بنجاح!'}
+            files = {'document': file}
+            response = requests.post(url, data=payload, files=files)
+            if response.status_code == 200:
+                print("🚀 تم إرسال الملف إلى تلغرام بنجاح!")
+            else:
+                print(f"❌ فشل الإرسال: {response.text}")
+    except Exception as e:
+        print(f"❌ خطأ أثناء الإرسال: {e}")
+
+def process():
+    input_file = 'data/data_results.xlsx'
+    output_dir = 'output'
     output_file = os.path.join(output_dir, 'final_result.xlsx')
 
-    print("--- بدأت العملية ---")
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
-    # التأكد من وجود ملف المدخلات
-    if not os.path.exists(input_file):
-        print(f"❌ خطأ: لم يتم العثور على ملف: {input_file}")
-        print("تأكد من وجود مجلد 'data' وبداخله ملف 'data_results.xlsx'")
-        return
-
-    try:
-        # قراءة الملف
-        print(f"📖 جاري قراءة الملف...")
+    if os.path.exists(input_file):
+        print("📖 جاري معالجة الملف...")
         df = pd.read_excel(input_file)
-
-        # إنشاء مجلد المخرجات إذا لم يكن موجوداً
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-
-        # حفظ الملف الجديد
+        
+        # حفظ الملف محلياً في خادم Railway مؤقتاً
         df.to_excel(output_file, index=False)
-        print(f"✅ تم حفظ الملف بنجاح في: {output_file}")
-        print("--- انتهت العملية بنجاح ---")
-
-    except Exception as e:
-        print(f"❌ حدث خطأ: {e}")
+        
+        # إرسال الملف إلى تلغرام
+        send_to_telegram(output_file)
+    else:
+        print(f"❌ الملف غير موجود في: {input_file}")
 
 if __name__ == "__main__":
-    process_excel()
+    process()

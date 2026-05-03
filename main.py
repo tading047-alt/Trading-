@@ -1,8 +1,7 @@
 import pandas as pd
 import os
-import sys
 
-def process():
+def process_excel():
     # المسارات داخل الحاوية
     input_file = '/app/data/data_results.xlsx'
     output_dir = '/app/output'
@@ -10,29 +9,28 @@ def process():
 
     print("--- بدأت العملية ---")
 
-    # 1. التأكد من وجود ملف المدخلات
+    # التأكد من وجود ملف المدخلات
     if not os.path.exists(input_file):
-        print(f"❌ خطأ: لم أجد ملف المدخلات في: {input_file}")
-        print("تأكد من وضع ملف data_results.xlsx داخل مجلد data على جهازك.")
+        print(f"❌ خطأ: لم يتم العثور على ملف: {input_file}")
+        print("تأكد من وجود مجلد 'data' وبداخله ملف 'data_results.xlsx'")
         return
 
     try:
-        # 2. قراءة الملف
-        print(f"📖 جاري قراءة الملف من {input_file}...")
+        # قراءة الملف
+        print(f"📖 جاري قراءة الملف...")
         df = pd.read_excel(input_file)
-        
-        # 3. التأكد من وجود مجلد المخرجات
+
+        # إنشاء مجلد المخرجات إذا لم يكن موجوداً
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
-            print(f"📁 تم إنشاء مجلد المخرجات: {output_dir}")
 
-        # 4. حفظ الملف
+        # حفظ الملف الجديد
         df.to_excel(output_file, index=False)
         print(f"✅ تم حفظ الملف بنجاح في: {output_file}")
         print("--- انتهت العملية بنجاح ---")
 
     except Exception as e:
-        print(f"❌ حدث خطأ غير متوقع: {e}")
+        print(f"❌ حدث خطأ: {e}")
 
 if __name__ == "__main__":
-    process()
+    process_excel()

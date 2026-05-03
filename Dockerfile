@@ -1,20 +1,15 @@
-# استخدام نسخة بيثون خفيفة
 FROM python:3.9-slim
 
-# تحديد مجلد العمل داخل الحاوية
 WORKDIR /app
 
-# نسخ ملف المتطلبات أولاً للاستفادة من الـ Cache
-COPY requirements.txt .
-
 # تثبيت المكتبات
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# نسخ باقي ملفات المشروع (الكود)
+# نسخ الكود
 COPY . .
 
-# إنشاء مجلد المخرجات (اختياري لأن الكود سينشئه، لكنه أفضل للتنظيم)
-RUN mkdir -p output
+# إنشاء المجلدات للتأكد (سيتم ربطها لاحقاً بالـ Volumes)
+RUN mkdir -p data output
 
-# تشغيل السكريبت عند تشغيل الحاوية
 CMD ["python", "main.py"]

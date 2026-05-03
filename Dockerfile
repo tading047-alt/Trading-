@@ -3,6 +3,5 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-# إنشاء المجلدات لضمان الصلاحيات
-RUN mkdir -p /app/data /app/output
+RUN mkdir -p data output
 CMD ["python", "main.py"]

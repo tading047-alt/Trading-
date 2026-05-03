@@ -1,18 +1,22 @@
-# ton_script.py
 import pandas as pd
 import os
-import sqlite3  # Bibliothèque standard, pas besoin de l'installer
 
-# Créer le dossier output
-os.makedirs("output", exist_ok=True)
+# التأكد من وجود المجلد
+output_dir = 'output'
+if not os.path.exists(output_dir):
+    os.makedirs(output_dir)
 
-# Générer le tableau
+# إنشاء بيانات بسيطة
 data = {
-    "Nom": ["Ahmed", "Sara", "Youssef"],
-    "Age": [22, 21, 23],
-    "Score": [85.5, 92.0, 78.5]
+    'الاسم': ['أحمد', 'سارة', 'خالد', 'ليلى'],
+    'المهنة': ['مطور', 'مصممة', 'محلل بيانات', 'مديرة مشاريع'],
+    'الراتب': [5000, 6000, 5500, 7000]
 }
 
 df = pd.DataFrame(data)
-df.to_excel("output/resultat.xlsx", index=False)
-print("Fichier Excel créé avec succès !")
+
+# حفظ الملف
+file_path = os.path.join(output_dir, 'data_results.xlsx')
+df.to_excel(file_path, index=False)
+
+print(f"✅ تم حفظ الملف بنجاح في: {file_path}")

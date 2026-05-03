@@ -1,28 +1,18 @@
-import openpyxl
+# ton_script.py
+import pandas as pd
 import os
+import sqlite3  # Bibliothèque standard, pas besoin de l'installer
 
 # Créer le dossier output
 os.makedirs("output", exist_ok=True)
 
-# Créer un nouveau classeur
-wb = openpyxl.Workbook()
-sheet = wb.active
-sheet.title = "Tableau"
+# Générer le tableau
+data = {
+    "Nom": ["Ahmed", "Sara", "Youssef"],
+    "Age": [22, 21, 23],
+    "Score": [85.5, 92.0, 78.5]
+}
 
-# Données à écrire (ligne 1 = en-têtes)
-data = [
-    ["Nom", "Age", "Note", "Ville"],
-    ["Ahmed", 22, 15, "Casablanca"],
-    ["Sara", 21, 17, "Rabat"],
-    ["Youssef", 23, 14, "Marrakech"],
-    ["Fatima", 20, 18, "Fès"],
-    ["Omar", 24, 16, "Tanger"]
-]
-
-# Écrire les données dans la feuille
-for row in data:
-    sheet.append(row)
-
-# Sauvegarder le fichier
-wb.save("output/tableau.xlsx")
-print("Tableau enregistré avec succès dans output/tableau.xlsx")
+df = pd.DataFrame(data)
+df.to_excel("output/resultat.xlsx", index=False)
+print("Fichier Excel créé avec succès !")

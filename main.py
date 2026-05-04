@@ -1,121 +1,108 @@
-import io
-import pandas as pd
-import matplotlib.pyplot as plt
-from PIL import Image
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
-from telegram.ext import Application, CommandHandler
-import arabic_reshaper
-from bidi.algorithm import get_display
+import gspread
+from google.oauth2.service_account import Credentials
+from telegram import Bot
+import os
 import logging
+import sys
 
-# إعداد السجلات (Logs) لمراقبة الأداء في Railway
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-
-# --- الإعدادات الخاصة بك ---
-SERVICE_ACCOUNT_FILE = 'credentials.json'
-SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
+# --- التهيئة والإعدادات --------------------------------
+# 🔐 بيانات الاعتماد (تم إدخالها مباشرة كما طلبت)
 TELEGRAM_TOKEN = "8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo"
-MY_FILE_ID = "163bpUCuaPpOVTMs73y2cBSa6KCOxIXzIWk2NNonOTrs"
-MY_CHAT_ID = "5067771509"
+TELEGRAM_CHAT_ID = "5067771509"
 
-# دالة معالجة النصوص العربية للرسوم البيانية
-def ar_text(text):
+# 🗂️ تم استخراج معرف الملف (Sheet ID) من الرابط:
+# https://docs.google.com/spreadsheets/d/163bpUCuaPpOVTMs73y2cBSa6KCOxIXzIWk2NNonOTrs/edit?usp=drivesdk
+GOOGLE_SHEET_ID = "163bpUCuaPpOVTMs73y2cBSa6KCOxIXzIWk2NNonOTrs"
+
+# --- إعداد نظام تسجيل الأحداث (Logging) ---------------
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# --- 1. الاتصال بـ Google Sheets -----------------------
+def connect_to_google_sheet(json_keyfile_path='credentials.json'):
+    """
+    الاتصال بـ Google Sheets باستخدام ملف JSON لحساب الخدمة.
+    يفترض أن ملف credentials.json موجود في نفس المجلد.
+    """
     try:
-        if not isinstance(text, str): text = str(text)
-        reshaped_text = arabic_reshaper.reshape(text)
-        return get_display(reshaped_text)
-    except:
-        return text
-
-# الاتصال بجوجل درايف
-def get_drive_service():
-    creds = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE, scopes=SCOPES)
-    return build('drive', 'v3', credentials=creds)
-
-# الوظيفة الأساسية للتقرير
-async def send_report(update, context):
-    chat_id = update.effective_chat.id
-    
-    # حماية: البوت لا يستجيب إلا لك (صاحب الـ Chat ID)
-    if str(chat_id) != MY_CHAT_ID:
-        await update.message.reply_text("🚫 عذراً، لا تملك صلاحية الوصول لهذا النظام.")
-        return
-
-    try:
-        service = get_drive_service()
+        # نطاقات الوصول المطلوبة
+        scope = [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive.readonly' # نطاق أقل صلاحية للقراءة فقط
+        ]
         
-        # 1. إشعار الاتصال بنجاح (كما طلبت)
-        # نقوم بمحاولة جلب معلومات الملف للتأكد من صحة الـ JSON والربط
-        file_metadata = service.files().get(fileId=MY_FILE_ID).execute()
+        # تحميل بيانات الاعتماد من ملف JSON
+        creds = None
+        if not os.path.exists(json_keyfile_path):
+            raise FileNotFoundError(f"الملف {json_keyfile_path} غير موجود في المسار الحالي.")
         
-        await context.bot.send_message(
-            chat_id=chat_id, 
-            text="✅ تم الاتصال بـ قوقلدريف و ربط ملف google sheet بنجاح"
-        )
-
-        # 2. تحميل الملف في الذاكرة (Memory Stream)
-        request = service.files().get_media(fileId=MY_FILE_ID)
-        file_stream = io.BytesIO()
-        downloader = MediaIoBaseDownload(file_stream, request)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-        file_stream.seek(0)
+        creds = Credentials.from_service_account_file(json_keyfile_path, scopes=scope)
+        client = gspread.authorize(creds)
         
-        # 3. قراءة البيانات وإنشاء الرسم البياني باستخدام Pandas و Matplotlib
-        df = pd.read_excel(file_stream)
+        # فتح Google Sheet باستخدام المعرف (ID)
+        sheet = client.open_by_key(GOOGLE_SHEET_ID).sheet1
         
-        plt.figure(figsize=(10, 6))
-        # استخدام أول عمودين (الأسماء والقيم)
-        labels = df[df.columns[0]].apply(ar_text)
-        values = df[df.columns[1]]
+        logger.info("✅ تم الاتصال بـ Google Drive وفتح Google Sheet بنجاح")
+        return sheet
         
-        plt.bar(labels, values, color='#1a73e8')
-        plt.title(ar_text("تحليل البيانات اللحظي"))
-        plt.grid(axis='y', linestyle='--', alpha=0.7)
-        
-        chart_buf = io.BytesIO()
-        plt.savefig(chart_buf, format='png', dpi=150, bbox_inches='tight')
-        chart_buf.seek(0)
-        
-        # 4. إرسال الصورة والملف الأصلي
-        await context.bot.send_photo(
-            chat_id=chat_id, 
-            photo=chart_buf, 
-            caption=f"📊 تقرير البيانات المحدث من: {file_metadata.get('name')}"
-        )
-        
-        file_stream.seek(0)
-        await context.bot.send_document(
-            chat_id=chat_id, 
-            document=file_stream, 
-            filename="trading_data_backup.xlsx",
-            caption="📂 نسخة أصلية من ملف البيانات المستلم."
-        )
-
+    except FileNotFoundError as e:
+        logger.error(f"❌ فشل الاتصال بالـ Drive: {e}")
+        return None
     except Exception as e:
-        await update.message.reply_text(f"🕵️ خطأ تقني: {str(e)}")
+        logger.error(f"❌ فشل الاتصال أو الفتح: {e}", exc_info=True)
+        return None
 
-# رسالة الترحيب عند بدء التشغيل
-async def start(update, context):
-    await update.message.reply_text(
-        "🤖 أهلاً بك في نظام الأتمتة الخاص بك.\n\n"
-        "الأوامر المتاحة:\n"
-        "📊 /report - جلب التقرير والبيانات من درايف."
-    )
+# --- 2. إرسال إشعار إلى Telegram -----------------------
+def send_telegram_message(message):
+    """إرسال رسالة نصية إلى قناة Telegram المحددة."""
+    try:
+        bot = Bot(token=TELEGRAM_TOKEN)
+        # استخدام parse_mode='HTML' لتنسيق النص لو أردت
+        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode='HTML')
+        logger.info("✅ تم إرسال الإشعار إلى Telegram بنجاح")
+        return True
+    except Exception as e:
+        logger.error(f"❌ فشل إرسال رسالة إلى Telegram: {e}")
+        return False
 
-if __name__ == '__main__':
-    # إنشاء تطبيق تليجرام
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+# --- 3. الدالة الرئيسية (التنفيذ الكامل) -----------------
+def main():
+    """الدالة الرئيسية التي تنفذ كل الخطوات بشكل متسلسل."""
+    logger.info("🚀 بدء تشغيل سكريبت الاتصال بـ Google Sheets وإرسال الإشعارات...")
     
-    # إضافة معالجات الأوامر
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("report", send_report))
+    # الخطوة 1: إرسال إشعار بدء المحاولة (اختياري)
+    send_telegram_message("🔄 جاري الاتصال بـ Google Drive وفتح الملف...")
     
-    print("🚀 البوت يبدأ الآن على السحاب...")
+    # الخطوة 2: الاتصال بـ Google Sheets باستخدام ملف JSON (مطلوب)
+    # تأكد أن ملف credentials.json موجود في نفس مسار هذا السكريبت
+    sheet = connect_to_google_sheet(json_keyfile_path='credentials.json')
     
-    # تشغيل البوت مع تنظيف التحديثات المعلقة لحل مشكلة Conflict
-    application.run_polling(drop_pending_updates=True)
+    # الخطوة 3: بناء رسالة النتيجة وإرسالها إلى Telegram
+    if sheet:
+        # نجاح الاتصال والفتح
+        success_message = (
+            "✅ <b>تم الاتصال بـ Google Drive بنجاح</b>\n"
+            "✅ <b>تم فتح Google Sheet بنجاح</b>\n\n"
+            f"📊 <b>اسم الورقة:</b> {sheet.title}\n"
+            f"🔢 <b>عدد الصفوف:</b> {len(sheet.get_all_values()) if sheet.get_all_values() else 0}"
+        )
+        send_telegram_message(success_message)
+    else:
+        # فشل في إحدى الخطوتين
+        error_message = (
+            "❌ <b>فشل في الاتصال بـ Google Drive أو فتح الملف</b>\n"
+            "يرجى التحقق من:\n"
+            "• وجود ملف credentials.json في المسار الصحيح\n"
+            "• مشاركة ملف Google Sheet مع بريد حساب الخدمة\n"
+            "• صحة معرف الملف (Sheet ID) في الكود"
+        )
+        send_telegram_message(error_message)
+    
+    logger.info("🏁 انتهاء تنفيذ السكريبت.\n" + "-"*40)
+
+# --- 4. نقطة دخول البرنامج --------------------------------
+if __name__ == "__main__":
+    main()

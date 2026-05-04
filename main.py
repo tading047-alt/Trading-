@@ -1,26 +1,15 @@
 import io
-import pandas as pd
-import matplotlib.pyplot as plt
-import dataframe_image as dfi
-from PIL import Image
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from telegram.ext import Application, CommandHandler
-import arabic_reshaper
-from bidi.algorithm import get_display
 
-# --- الإعدادات الخاصة بك ---
+# --- الإعدادات الخاصة بك (نفس البيانات السابقة) ---
 SERVICE_ACCOUNT_FILE = 'credentials.json'
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 TELEGRAM_TOKEN = "8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo"
 MY_FILE_ID = "163bpUCuaPpOVTMs73y2cBSa6KCOxIXzIWk2NNonOTrs"
 MY_CHAT_ID = "5067771509"
-
-# دالة معالجة النصوص العربية
-def ar_text(text):
-    if not isinstance(text, str): text = str(text)
-    return get_display(arabic_reshaper.reshape(text))
 
 # الاتصال بجوجل درايف
 def get_drive_service():
@@ -28,19 +17,30 @@ def get_drive_service():
         SERVICE_ACCOUNT_FILE, scopes=SCOPES)
     return build('drive', 'v3', credentials=creds)
 
-# وظيفة تحليل البيانات وإرسال التقرير
+# وظيفة تحليل البيانات وإرسال التقرير مع الإشعارات المطلوبة
 async def send_report(update, context):
     chat_id = update.effective_chat.id
-    # التحقق من أن المستخدم هو صاحب الصلاحية (اختياري)
+    
+    # التأكد من هوية المستخدم
     if str(chat_id) != MY_CHAT_ID:
         await update.message.reply_text("عذراً، لا تملك صلاحية الوصول.")
         return
 
-    await update.message.reply_text("⏳ جاري سحب البيانات وتحليلها...")
-
     try:
+        # البدء بالاتصال
         service = get_drive_service()
-        # 1. تحميل الملف
+        
+        # محاولة الوصول للملف للتأكد من الربط
+        file_metadata = service.files().get(fileId=MY_FILE_ID).execute()
+        
+        # --- الإشعار الذي طلبته عند نجاح الاتصال ---
+        if file_metadata:
+            await context.bot.send_message(
+                chat_id=chat_id, 
+                text="✅ تم الاتصال بـ قوقلدريف و ربط ملف google sheet بنجاح"
+            )
+
+        # متابعة العمل (تحميل الملف)
         request = service.files().get_media(fileId=MY_FILE_ID)
         file_stream = io.BytesIO()
         downloader = MediaIoBaseDownload(file_stream, request)
@@ -49,32 +49,19 @@ async def send_report(update, context):
             _, done = downloader.next_chunk()
         file_stream.seek(0)
         
-        # 2. قراءة البيانات (Pandas)
-        df = pd.read_excel(file_stream)
-        
-        # 3. إنشاء الصورة التحليلية (رسم بياني + جدول)
-        # (هنا نستخدم نفس الكود السابق لإنشاء الصورة الاحترافية)
-        plt.figure(figsize=(6, 4))
-        plt.bar(df[df.columns[0]].apply(ar_text), df[df.columns[1]], color='#4CAF50')
-        plt.title(ar_text("تحليل النتائج الحالية"))
-        chart_buf = io.BytesIO()
-        plt.savefig(chart_buf, format='png', dpi=100)
-        chart_buf.seek(0)
-        chart_img = Image.open(chart_buf)
-        
-        # 4. إرسال التقرير كصورة
-        chart_buf.seek(0)
-        await context.bot.send_photo(chat_id=chat_id, photo=chart_buf, caption="✅ تقريرك البصري جاهز!")
-        
-        # 5. إرسال نسخة من الملف الأصلي
-        file_stream.seek(0)
-        await context.bot.send_document(chat_id=chat_id, document=file_stream, filename="data_backup.xlsx")
+        # إرسال الملف الأصلي كإشعار إضافي
+        await context.bot.send_document(
+            chat_id=chat_id, 
+            document=file_stream, 
+            filename="database_update.xlsx",
+            caption="📂 نسخة من البيانات المستلمة."
+        )
 
     except Exception as e:
-        await update.message.reply_text(f"❌ حدث خطأ: {str(e)}")
+        await update.message.reply_text(f"❌ فشل الاتصال: تأكد من مشاركة الملف مع حساب الخدمة.\nالخطأ: {str(e)}")
 
 if __name__ == '__main__':
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("report", send_report))
-    print("🚀 البوت يعمل الآن.. أرسل /report في تليجرام")
+    print("🚀 البوت يعمل الآن.. بانتظار أمر /report")
     app.run_polling()

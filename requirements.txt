@@ -1,6 +1,18 @@
-pandas
-openpyxl
-requests
-matplotlib
-arabic-reshaper
-python-bidi
+# --- مكتبات الاتصال بجوجل ---
+google-api-python-client==2.128.0
+google-auth-httplib2==0.2.0
+google-auth-oauthlib==1.2.0
+
+# --- مكتبات تليجرام ---
+python-telegram-bot==21.1.1
+
+# --- مكتبات تحليل البيانات والمعالجة ---
+pandas==2.2.2
+openpyxl==3.1.2
+Pillow==10.3.0
+matplotlib==3.8.4
+dataframe_image==0.1.11
+
+# --- مكتبات دعم اللغة العربية في الصور ---
+arabic-reshaper==3.0.0
+python-bidi==0.4.2

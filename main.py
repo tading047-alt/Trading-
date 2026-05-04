@@ -1,66 +1,80 @@
+import io
 import pandas as pd
-import os
-import requests
 import matplotlib.pyplot as plt
+import dataframe_image as dfi
+from PIL import Image
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+from telegram.ext import Application, CommandHandler
 import arabic_reshaper
 from bidi.algorithm import get_display
 
-# إعدادات تلغرام
-BOT_TOKEN = os.getenv('TELEGRAM_TOKEN', '8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo')
-CHAT_ID = os.getenv('CHAT_ID', '5067771509')
+# --- الإعدادات الخاصة بك ---
+SERVICE_ACCOUNT_FILE = 'credentials.json'
+SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
+TELEGRAM_TOKEN = "8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo"
+MY_FILE_ID = "163bpUCuaPpOVTMs73y2cBSa6KCOxIXzIWk2NNonOTrs"
+MY_CHAT_ID = "5067771509"
 
-def fix_arabic_text(text):
-    # دالة لمعالجة النصوص العربية لتظهر بشكل صحيح في الرسم البياني
-    reshaped_text = arabic_reshaper.reshape(text)
-    return get_display(reshaped_text)
+# دالة معالجة النصوص العربية
+def ar_text(text):
+    if not isinstance(text, str): text = str(text)
+    return get_display(arabic_reshaper.reshape(text))
 
-def send_telegram_photo(photo_path, caption):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-    with open(photo_path, 'rb') as photo:
-        requests.post(url, data={'chat_id': CHAT_ID, 'caption': caption}, files={'photo': photo})
+# الاتصال بجوجل درايف
+def get_drive_service():
+    creds = service_account.Credentials.from_service_account_file(
+        SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+    return build('drive', 'v3', credentials=creds)
 
-def analyze_and_plot():
-    input_file = 'data/Large_Sales_Purchases_Data.xlsx'
-    output_hist = 'output/clients_histogram.png'
-    
-    if not os.path.exists('output'): os.makedirs('output')
+# وظيفة تحليل البيانات وإرسال التقرير
+async def send_report(update, context):
+    chat_id = update.effective_chat.id
+    # التحقق من أن المستخدم هو صاحب الصلاحية (اختياري)
+    if str(chat_id) != MY_CHAT_ID:
+        await update.message.reply_text("عذراً، لا تملك صلاحية الوصول.")
+        return
 
-    if os.path.exists(input_file):
-        df = pd.read_excel(input_file)
-        df.columns = df.columns.str.strip()
+    await update.message.reply_text("⏳ جاري سحب البيانات وتحليلها...")
+
+    try:
+        service = get_drive_service()
+        # 1. تحميل الملف
+        request = service.files().get_media(fileId=MY_FILE_ID)
+        file_stream = io.BytesIO()
+        downloader = MediaIoBaseDownload(file_stream, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        file_stream.seek(0)
         
-        # تجميع البيانات (إجمالي المبالغ لكل عميل)
-        stats = df.groupby('الجهة (عميل/مورد)')['الإجمالي'].sum().reset_index()
-        stats.columns = ['العميل', 'إجمالي_المبالغ']
-        stats = stats.sort_values(by='إجمالي_المبالغ', ascending=False)
-
-        # تجهيز الأسماء العربية للرسم البياني
-        stats['العميل_معدل'] = stats['العميل'].apply(fix_arabic_text)
-
-        # رسم الـ Histogram (Bar Chart)
-        plt.figure(figsize=(12, 7))
-        bars = plt.bar(stats['العميل_معدل'], stats['إجمالي_المبالغ'], color='skyblue', edgecolor='navy')
+        # 2. قراءة البيانات (Pandas)
+        df = pd.read_excel(file_stream)
         
-        # إضافة العناوين مع معالجة اللغة العربية
-        plt.title(fix_arabic_text('إجمالي قيمة المعاملات لكل عميل'), fontsize=16)
-        plt.xlabel(fix_arabic_text('اسم العميل'), fontsize=12)
-        plt.ylabel(fix_arabic_text('إجمالي المبالغ'), fontsize=12)
+        # 3. إنشاء الصورة التحليلية (رسم بياني + جدول)
+        # (هنا نستخدم نفس الكود السابق لإنشاء الصورة الاحترافية)
+        plt.figure(figsize=(6, 4))
+        plt.bar(df[df.columns[0]].apply(ar_text), df[df.columns[1]], color='#4CAF50')
+        plt.title(ar_text("تحليل النتائج الحالية"))
+        chart_buf = io.BytesIO()
+        plt.savefig(chart_buf, format='png', dpi=100)
+        chart_buf.seek(0)
+        chart_img = Image.open(chart_buf)
         
-        # تدوير الأسماء لتسهيل القراءة إذا كانت كثيرة
-        plt.xticks(rotation=45, ha='right')
+        # 4. إرسال التقرير كصورة
+        chart_buf.seek(0)
+        await context.bot.send_photo(chat_id=chat_id, photo=chart_buf, caption="✅ تقريرك البصري جاهز!")
+        
+        # 5. إرسال نسخة من الملف الأصلي
+        file_stream.seek(0)
+        await context.bot.send_document(chat_id=chat_id, document=file_stream, filename="data_backup.xlsx")
 
-        # إضافة القيم فوق كل عمود
-        for bar in bars:
-            yval = bar.get_height()
-            plt.text(bar.get_x() + bar.get_width()/2, yval, f'{yval:,.0f}', va='bottom', ha='center', fontsize=10)
+    except Exception as e:
+        await update.message.reply_text(f"❌ حدث خطأ: {str(e)}")
 
-        plt.tight_layout()
-        plt.savefig(output_hist)
-        plt.close()
-
-        # إرسال الصورة إلى تلغرام
-        send_telegram_photo(output_hist, "📊 مخطط بياني (Histogram) لقيم معاملات العملاء")
-        print("✅ تم إرسال المخطط البياني بنجاح!")
-
-if __name__ == "__main__":
-    analyze_and_plot()
+if __name__ == '__main__':
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("report", send_report))
+    print("🚀 البوت يعمل الآن.. أرسل /report في تليجرام")
+    app.run_polling()

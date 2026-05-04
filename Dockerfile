@@ -1,14 +1,15 @@
-# Dockerfile
+# Dockerfile - نسخة محدثة بدون ntpdate
 FROM python:3.10-slim
 
-# تثبيت أدوات الوقت
+# تثبيت أدوات الوقت المتاحة
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ntpdate \
     ca-certificates \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-# مزامنة الوقت مع Google Servers
-RUN ntpdate -u time.google.com
+# تعيين المنطقة الزمنية (اختياري - غيرها حسب موقعك)
+ENV TZ=Africa/Tunis
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 WORKDIR /app
 

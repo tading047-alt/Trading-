@@ -1,12 +1,9 @@
-# Dockerfile
 FROM python:3.10-slim
 
 WORKDIR /app
 
-# نسخ ملف المتطلبات
+# نسخ وتثبيت المتطلبات
 COPY requirements.txt .
-
-# تثبيت المكتبات
 RUN pip install --no-cache-dir -r requirements.txt
 
 # نسخ ملفات المشروع

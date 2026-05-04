@@ -1,34 +1,54 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import gspread
 from google.oauth2.service_account import Credentials
 from telegram import Bot
 import os
-import json
+import sys
 from datetime import datetime
 
 # ============================================
-# 🔐 قم بإدخال بياناتك هنا (ملف credentials.json)
+# 🔐 بيانات الاعتماد - أدخل بياناتك هنا
 # ============================================
 
-# 1. معلومات ملف Google Sheet
-# معرف الملف من الرابط:
-# https://docs.google.com/spreadsheets/d/163bpUCuaPpOVTMs73y2cBSa6KCOxIXzIWk2NNonOTrs/edit
-SHEET_ID = "163bpUCuaPpOVTMs73y2cBSa6KCOxIXzIWk2NNonOTrs"
-SHEET_NAME = "Sheet1"  # أو اسم الورقة التي تريدها
+# بيانات Telegram (استبدلها ببياناتك)
+TELEGRAM_TOKEN = "8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo"
+TELEGRAM_CHAT_ID = "5067771509"
 
-# 2. معلومات Telegram (ضعها في متغيرات البيئة - الأكثر أماناً)
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "ضع_التوكن_هنا_يدوياً")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "ضع_رقم_الدردشة_هنا")
+# بيانات Google Sheet
+SHEET_ID = "163bpUCuaPpOVTMs73y2cBSa6KCOxIXzIWk2NNonOTrs"  # من رابط الملف
+SHEET_NAME = "sheet1"  # اسم الورقة (غيرها إذا لزم الأمر)
 
-# 3. مسار ملف JSON من Google Cloud
-JSON_KEYFILE = "credentials.json"  # ضع ملف JSON في نفس المجلد
+# ملف JSON من Google Cloud (ضعه في نفس المجلد)
+JSON_KEYFILE = "credentials.json"
 
 # ============================================
-# دوال البرنامج
+# دوال الإشعارات
 # ============================================
+
+def send_telegram_message(message):
+    """إرسال رسالة إلى Telegram"""
+    try:
+        bot = Bot(token=TELEGRAM_TOKEN)
+        bot.send_message(
+            chat_id=TELEGRAM_CHAT_ID, 
+            text=message, 
+            parse_mode='HTML'
+        )
+        print(f"✅ تم الإرسال إلى Telegram: {message[:50]}...")
+        return True
+    except Exception as e:
+        print(f"❌ فشل الإرسال إلى Telegram: {e}")
+        return False
 
 def connect_to_google_sheet():
-    """الاتصال بـ Google Sheets باستخدام ملف JSON"""
+    """الاتصال بـ Google Sheets وإرسال الإشعارات"""
     try:
+        # إشعار بدء الاتصال
+        print("🔄 جاري الاتصال بـ Google Drive...")
+        
+        # إعداد الصلاحيات
         scope = [
             'https://www.googleapis.com/auth/spreadsheets',
             'https://www.googleapis.com/auth/drive'
@@ -36,103 +56,75 @@ def connect_to_google_sheet():
         
         # التحقق من وجود ملف JSON
         if not os.path.exists(JSON_KEYFILE):
-            raise Exception(f"ملف {JSON_KEYFILE} غير موجود! تأكد من وضعه في نفس المجلد")
+            raise Exception(f"ملف {JSON_KEYFILE} غير موجود!")
         
-        # تحميل بيانات الاعتماد
+        # الاتصال بـ Google
         creds = Credentials.from_service_account_file(JSON_KEYFILE, scopes=scope)
         client = gspread.authorize(creds)
         
-        # فتح الملف باستخدام المعرف
+        # إرسال إشعار الاتصال بـ Drive
+        send_telegram_message("✅ تم الاتصال بـ Google Drive بنجاح")
+        
+        # فتح ملف Google Sheet
+        print("🔄 جاري فتح Google Sheet...")
         sheet = client.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
         
-        print("✅ تم الاتصال بـ Google Drive بنجاح")
-        print("✅ تم فتح Google Sheet بنجاح")
+        # إرسال إشعار فتح الملف
+        send_telegram_message("✅ تم فتح Google Sheet بنجاح")
         
+        # الحصول على معلومات إضافية
+        sheet_title = sheet.title
+        row_count = len(sheet.get_all_values())
+        col_count = len(sheet.get_all_values()[0]) if row_count > 0 else 0
+        
+        # إرسال معلومات الملف
+        info_message = f"""
+📊 <b>معلومات الملف</b>
+────────────────
+📄 اسم الورقة: {sheet_title}
+📏 عدد الصفوف: {row_count}
+📐 عدد الأعمدة: {col_count}
+🆔 معرف الملف: {SHEET_ID[:15]}...
+📅 الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+        """
+        send_telegram_message(info_message)
+        
+        print("✅ تم إرسال جميع الإشعارات بنجاح")
         return sheet
         
     except Exception as e:
-        print(f"❌ خطأ في الاتصال: {e}")
+        error_msg = f"❌ خطأ: {str(e)}"
+        print(error_msg)
+        send_telegram_message(error_msg)
         return None
-
-def send_telegram_message(message):
-    """إرسال رسالة إلى Telegram"""
-    try:
-        bot = Bot(token=TELEGRAM_TOKEN)
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode='HTML')
-        print("✅ تم إرسال الإشعار إلى Telegram")
-        return True
-    except Exception as e:
-        print(f"❌ خطأ في إرسال رسالة Telegram: {e}")
-        return False
-
-def read_first_rows(sheet, num_rows=5):
-    """قراءة أول عدد محدد من الصفوف"""
-    try:
-        rows = sheet.get_all_values()
-        if not rows:
-            return None
-        
-        print(f"📊 تم قراءة {len(rows)} صف و {len(rows[0])} عمود")
-        return rows[:num_rows]
-        
-    except Exception as e:
-        print(f"❌ خطأ في قراءة البيانات: {e}")
-        return None
-
-def format_telegram_message(data):
-    """تنسيق البيانات لإرسالها إلى Telegram"""
-    if not data:
-        return "⚠️ لا توجد بيانات في Google Sheet"
-    
-    message = "📊 <b>بيانات Google Sheet</b>\n\n"
-    message += f"📅 الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-    message += f"🆔 معرف الملف: {SHEET_ID}\n"
-    message += "─" * 20 + "\n\n"
-    
-    for i, row in enumerate(data):
-        message += f"<b>الصف {i+1}:</b>\n"
-        for j, cell in enumerate(row):
-            message += f"  {chr(65+j)}: {cell}\n"
-        message += "\n"
-    
-    # Telegram limit is ~4096 characters
-    if len(message) > 4000:
-        message = message[:4000] + "\n\n... (تم اقتطاع الرسالة)"
-    
-    return message
 
 # ============================================
-# الدالة الرئيسية
+# التشغيل الرئيسي
 # ============================================
 
 def main():
-    """الدالة الرئيسية للتشغيل"""
-    print("🔄 بدء تشغيل البرنامج...")
+    """الدالة الرئيسية"""
+    print("=" * 50)
+    print("🚀 بدء تشغيل برنامج إشعارات Telegram")
+    print("=" * 50)
     
-    # 1. الاتصال بـ Google Sheet
+    # الاتصال وإرسال الإشعارات
     sheet = connect_to_google_sheet()
     
-    if not sheet:
-        send_telegram_message("❌ فشل الاتصال بـ Google Drive أو فتح Google Sheet")
-        return
-    
-    # 2. إرسال إشعار نجاح الاتصال
-    success_message = "✅ تم الاتصال بـ Google Drive بنجاح\n✅ تم فتح Google Sheet بنجاح"
-    send_telegram_message(success_message)
-    
-    # 3. قراءة البيانات (اختياري - قم بإزالة التعليق إذا أردت إرسال البيانات)
-    """
-    print("🔄 جاري قراءة البيانات...")
-    data = read_first_rows(sheet, num_rows=5)
-    
-    if data:
-        formatted_message = format_telegram_message(data)
-        send_telegram_message(formatted_message)
+    if sheet:
+        print("\n✨ تم الانتهاء بنجاح! تحقق من Telegram")
+        # اختياري: طباعة أول 3 صفوف من البيانات
+        try:
+            data = sheet.get_all_values()[:3]
+            print("\n📊 عينة من البيانات:")
+            for i, row in enumerate(data, 1):
+                print(f"   الصف {i}: {row[:3]}...")
+        except:
+            pass
     else:
-        send_telegram_message("⚠️ لا توجد بيانات للعرض في Google Sheet")
-    """
+        print("\n❌ فشل التشغيل. راجع الأخطاء أعلاه.")
     
-    print("\n✅ تم الانتهاء بنجاح!")
+    print("=" * 50)
 
 # ============================================
 # تشغيل البرنامج

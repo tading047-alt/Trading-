@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "mouldi",
+  "private_key_id": "1a6b20bd8360b1671623d0b406cf52a12a4d6fd0",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQCY7eRF0atFJ+jb\nk93mmicTCtitSDxkEv4sBABhjV3Wsz/KsRxHWs+pjNZA6lIfQQs7r6i5svuTKHey\nJ0rYfdjV3zEIvUWNLy8DHyv/jeZ/wGcIPxu0awZJ43fczO2AEYI8JbdQigUegzUe\n0u1UkCzV7ya0Idswhwx39VPqiBNmoInhVJ1ZVOIncHn86PrHhkAFP26DJub4RjG3\nqo1/EtdBGOHmlaEhIi+l2cK5OSal+4uz8F2KizNfE4sAS/POYZQpl5isJ57FIY9P\nvZrrEJ/+bsMyS1C4UcHmdXZ41EZs70BJRpmxR8MNp57DCPIha64Vb/FRWCFGcEpi\nWmwllT1tAgMBAAECggEACF83mLHkfiXz67dh1bq5KmP03jGe6ryWcQrsCWsfiL4p\n3xsIiQh551aIMSgSxFa/em5Anp/jgVgdC2H2yTjEetrb2JZh/Rto57MYacZXKMW7\n7jnkNqGIR9m9yVbnppPuzQOkkDJqGtREf3I9H1zAM5sCw6g502OFRXjm9ecqprrL\n/4JPbZl0m1pwBbg+rcQG2SE3A22cuqw8Nab3OyP7DTkG+bn5OnezcvK5ZdpoiL7W\ndNM3te7sOZY/AkQyNw5v06wRG+CtDqqAwZoMX/RCh9RSsqVgeS//x7Qm2WvSEtd/\njveMvlXsembrzLytskAmBruhsVo/dcbJWHpfk5tgkQKBgQDG1pNkSxsyuE1uEtOU\nBlwmHZhf6/LijXbNFdql1u1nEy+IGX9uEepRKocMCM6yhA6A5Y0jQls86xXOFGVH\n/ysADk50E8/SXDXx1v0iLD+G/+AcYIF5hIDKzA2JcQb0bsCRDOyiukBzR/P44SS3\n6e5aF35T4RODEf2F3kyVnhF7nQKBgQDE5KpbwgKDlTyZoT90NDnPCyD5CBN8if6M\ncBDhh9fvI5zzyFhmuVAryHZP+DrC97Ye+EutpoaKFWnixhrCxHIdJt7XW8LQ7ysg\nKq/P6/32ZjD/aFcBfitEFF0Tid47Rd69VKPD61475RGpArvT+L6vtUIyWvSN7zeo\n+OFmAXGoEQKBgQC8cNNS85MdKGnJbfIykSx3uwiTr6uKZgM3LgT/sodfbmFXnMKV\n8EifD6zZDOfHazvLkMGHrvWE8E7D9bRe3UdFUEmt3LDSbi15uwQ/hKvYJ1ufyR4r\nqhXdHDGgFgw/T08UqKkDN3ypRIHFVqpT2lHX8/f3SpIRX9VjL2BpU1rCSQKBgQCE\n6FJzFBh8WC4LCoT53RM0xq9gS2pUBBaXGELc6sUBgUm+afv6g5cxpuTugIKx/2Kp\nrzPuqV1iMqhCUzXXSaI6OXXta9yrCvdShF4ffY72V+81SWqJ8HAmSZS2zrb7zeNY\nbJ0LcIMw7SUpsFW39c5Kb5GayjkQ4mzxG+eS4uCk8QKBgQCHYrOs9LY52g9TQSWj\nFQdFTjwJP1yoWondKsjTOQ7D60w5T0ecVtmqmRWNQrVwTTTSoj4sTFB8A0r5FsFe\nr+w3zWl944+7QQPraFz2U9V4Tckiik+aq2scKLLyTJXsZ1MK85fa68OpfI92hA5c\ngHr8yfLEgvN7L2aSGyzvrctDNw==\n-----END PRIVATE KEY-----\n",
+  "client_email": "mouldi@mouldi.iam.gserviceaccount.com",
+  "client_id": "103919270152524049448",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/mouldi%40mouldi.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}

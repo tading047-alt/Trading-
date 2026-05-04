@@ -8,7 +8,10 @@ from googleapiclient.http import MediaIoBaseDownload
 from telegram.ext import Application, CommandHandler
 import arabic_reshaper
 from bidi.algorithm import get_display
-import asyncio
+import logging
+
+# إعداد السجلات (Logs) لمراقبة الأداء في Railway
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # --- الإعدادات الخاصة بك ---
 SERVICE_ACCOUNT_FILE = 'credentials.json'
@@ -19,8 +22,12 @@ MY_CHAT_ID = "5067771509"
 
 # دالة معالجة النصوص العربية للرسوم البيانية
 def ar_text(text):
-    if not isinstance(text, str): text = str(text)
-    return get_display(arabic_reshaper.reshape(text))
+    try:
+        if not isinstance(text, str): text = str(text)
+        reshaped_text = arabic_reshaper.reshape(text)
+        return get_display(reshaped_text)
+    except:
+        return text
 
 # الاتصال بجوجل درايف
 def get_drive_service():
@@ -32,7 +39,7 @@ def get_drive_service():
 async def send_report(update, context):
     chat_id = update.effective_chat.id
     
-    # حماية: البوت لا يستجيب إلا لك
+    # حماية: البوت لا يستجيب إلا لك (صاحب الـ Chat ID)
     if str(chat_id) != MY_CHAT_ID:
         await update.message.reply_text("🚫 عذراً، لا تملك صلاحية الوصول لهذا النظام.")
         return
@@ -41,14 +48,15 @@ async def send_report(update, context):
         service = get_drive_service()
         
         # 1. إشعار الاتصال بنجاح (كما طلبت)
+        # نقوم بمحاولة جلب معلومات الملف للتأكد من صحة الـ JSON والربط
         file_metadata = service.files().get(fileId=MY_FILE_ID).execute()
-        if file_metadata:
-            await context.bot.send_message(
-                chat_id=chat_id, 
-                text="✅ تم الاتصال بـ قوقلدريف و ربط ملف google sheet بنجاح"
-            )
+        
+        await context.bot.send_message(
+            chat_id=chat_id, 
+            text="✅ تم الاتصال بـ قوقلدريف و ربط ملف google sheet بنجاح"
+        )
 
-        # 2. تحميل الملف في الذاكرة
+        # 2. تحميل الملف في الذاكرة (Memory Stream)
         request = service.files().get_media(fileId=MY_FILE_ID)
         file_stream = io.BytesIO()
         downloader = MediaIoBaseDownload(file_stream, request)
@@ -57,50 +65,57 @@ async def send_report(update, context):
             _, done = downloader.next_chunk()
         file_stream.seek(0)
         
-        # 3. قراءة البيانات وإنشاء الرسم البياني
+        # 3. قراءة البيانات وإنشاء الرسم البياني باستخدام Pandas و Matplotlib
         df = pd.read_excel(file_stream)
         
-        plt.figure(figsize=(8, 5))
-        # نفترض أن العمود الأول هو الأسماء والثاني هو القيم
-        plt.bar(df[df.columns[0]].apply(ar_text), df[df.columns[1]], color='#2ecc71')
-        plt.title(ar_text("تحليل البيانات المحدثة"))
+        plt.figure(figsize=(10, 6))
+        # استخدام أول عمودين (الأسماء والقيم)
+        labels = df[df.columns[0]].apply(ar_text)
+        values = df[df.columns[1]]
+        
+        plt.bar(labels, values, color='#1a73e8')
+        plt.title(ar_text("تحليل البيانات اللحظي"))
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
         
         chart_buf = io.BytesIO()
-        plt.savefig(chart_buf, format='png', dpi=120)
+        plt.savefig(chart_buf, format='png', dpi=150, bbox_inches='tight')
         chart_buf.seek(0)
         
-        # 4. إرسال الصورة والملف
+        # 4. إرسال الصورة والملف الأصلي
         await context.bot.send_photo(
             chat_id=chat_id, 
             photo=chart_buf, 
-            caption=f"📊 تقرير البيانات لملف: {file_metadata.get('name')}"
+            caption=f"📊 تقرير البيانات المحدث من: {file_metadata.get('name')}"
         )
         
         file_stream.seek(0)
         await context.bot.send_document(
             chat_id=chat_id, 
             document=file_stream, 
-            filename="backup_data.xlsx",
-            caption="📂 نسخة احتياطية من الملف الأصلي."
+            filename="trading_data_backup.xlsx",
+            caption="📂 نسخة أصلية من ملف البيانات المستلم."
         )
 
     except Exception as e:
-        await update.message.reply_text(f"❌ خطأ تقني: {str(e)}")
+        await update.message.reply_text(f"🕵️ خطأ تقني: {str(e)}")
 
-# رسالة الترحيب
+# رسالة الترحيب عند بدء التشغيل
 async def start(update, context):
-    await update.message.reply_text("🤖 أهلاً بك في نظام التداول والأتمتة الخاص بك.\nاستخدم /report لجلب أحدث التقارير.")
+    await update.message.reply_text(
+        "🤖 أهلاً بك في نظام الأتمتة الخاص بك.\n\n"
+        "الأوامر المتاحة:\n"
+        "📊 /report - جلب التقرير والبيانات من درايف."
+    )
 
-# تشغيل البوت مع معالجة الـ Conflict
 if __name__ == '__main__':
-    # بناء التطبيق
+    # إنشاء تطبيق تليجرام
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # إضافة الأوامر
+    # إضافة معالجات الأوامر
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("report", send_report))
     
-    print("🚀 جاري تشغيل البوت وتنظيف الاتصالات القديمة...")
+    print("🚀 البوت يبدأ الآن على السحاب...")
     
-    # حل مشكلة Conflict على Railway: حذف أي Webhook قديم وتنظيف التحديثات
+    # تشغيل البوت مع تنظيف التحديثات المعلقة لحل مشكلة Conflict
     application.run_polling(drop_pending_updates=True)

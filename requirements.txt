@@ -1,16 +1,6 @@
-# مكتبات تليجرام
-python-telegram-bot==21.1.1
-
-# مكتبات جوجل والاتصال بـ Google Drive
-google-api-python-client==2.128.0
-google-auth-httplib2==0.2.0
-google-auth-oauthlib==1.2.0
-
-# مكتبات معالجة البيانات والإكسل
-pandas==2.2.2
-openpyxl==3.1.2
-
-# مكتبات إضافية لمعالجة الرسوم البيانية واللغة العربية (اختياري لكن مفضل)
-matplotlib==3.8.4
-arabic-reshaper==3.0.0
-python-bidi==0.4.2
+python-telegram-bot
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+pandas
+openpyxl

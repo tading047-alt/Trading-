@@ -1,119 +1,79 @@
-# main_working.py - نسخة مبسطة 100% تعمل
-#!/usr/bin/env python3
+import io
+import pandas as pd
+import logging
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+from telegram.ext import Application, CommandHandler
 
-import gspread
-from google.oauth2.service_account import Credentials
-import telegram
-import os
-import json
-from datetime import datetime
+# إعداد السجلات لمراقبة أداء البوت على Railway
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# ============================================
-# بياناتك
-# ============================================
-
+# --- الإعدادات الخاصة بك التي قدمتها ---
+SERVICE_ACCOUNT_FILE = 'credentials.json' # تأكد من وجود هذا الملف بجانب الكود
+SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 TELEGRAM_TOKEN = "8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo"
-TELEGRAM_CHAT_ID = "5067771509"
-SHEET_ID = "163bpUCuaPpOVTMs73y2cBSa6KCOxIXzIWk2NNonOTrs"
-JSON_KEYFILE = "credentials.json"
+MY_FILE_ID = "163bpUCuaPpOVTMs73y2cBSa6KCOxIXzIWk2NNonOTrs"
+MY_CHAT_ID = "5067771509"
+SHEET_NAME = "sheet1"
 
-# ============================================
-# دالة الإرسال إلى Telegram
-# ============================================
+# دالة الاتصال بـ Google Drive
+def get_drive_service():
+    creds = service_account.Credentials.from_service_account_file(
+        SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+    return build('drive', 'v3', credentials=creds)
 
-def send_telegram(message):
-    """إرسال رسالة إلى Telegram"""
-    try:
-        bot = telegram.Bot(token=TELEGRAM_TOKEN)
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode='HTML')
-        print("✅ تم الإرسال إلى Telegram")
-        return True
-    except Exception as e:
-        print(f"❌ فشل الإرسال: {e}")
-        return False
-
-# ============================================
-# الدالة الرئيسية - باستخدام الطريقة الصحيحة
-# ============================================
-
-def main():
-    print("=" * 50)
-    print("🚀 تشغيل برنامج الإشعارات")
-    print("=" * 50)
+# الدالة الأساسية للربط وإرسال الإشعار
+async def check_connection(update, context):
+    chat_id = update.effective_chat.id
     
-    # 1. التحقق من وجود الملف
-    if not os.path.exists(JSON_KEYFILE):
-        send_telegram(f"❌ ملف {JSON_KEYFILE} غير موجود!")
-        print(f"❌ ملف {JSON_KEYFILE} غير موجود!")
+    # حماية للوصول الخاص بك فقط
+    if str(chat_id) != MY_CHAT_ID:
+        await update.message.reply_text("🚫 لا تملك صلاحية الوصول.")
         return
-    
-    # 2. قراءة البريد الإلكتروني من الملف
-    with open(JSON_KEYFILE, 'r') as f:
-        creds_data = json.load(f)
-        service_email = creds_data['client_email']
-        print(f"📧 حساب الخدمة: {service_email}")
-    
-    # 3. إرسال إشعار بدء التشغيل
-    send_telegram("🔄 جاري الاتصال بـ Google Drive...")
-    
-    # 4. الطريقة الصحيحة للاتصال (ليست service_account)
+
     try:
-        # تعريف الصلاحيات المطلوبة
-        scope = [
-            'https://www.googleapis.com/auth/spreadsheets',
-            'https://www.googleapis.com/auth/drive'
-        ]
+        # 1. محاولة الاتصال بجوجل درايف
+        service = get_drive_service()
         
-        # تحميل بيانات الاعتماد من الملف
-        creds = Credentials.from_service_account_file(
-            JSON_KEYFILE,
-            scopes=scope
+        # 2. جلب معلومات الملف للتأكد من نجاح الربط
+        file_metadata = service.files().get(fileId=MY_FILE_ID).execute()
+        
+        # 3. إرسال الإشعار المطلوب فوراً
+        await context.bot.send_message(
+            chat_id=chat_id, 
+            text="✅ تم الاتصال بـ قوقلدريف و ربط ملف google sheet بنجاح"
         )
+
+        # 4. محاولة قراءة البيانات للتأكد من صلاحية الوصول لـ sheet1
+        request = service.files().get_media(fileId=MY_FILE_ID)
+        file_stream = io.BytesIO()
+        downloader = MediaIoBaseDownload(file_stream, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
         
-        # إنشاء عميل gspread
-        client = gspread.authorize(creds)
+        file_stream.seek(0)
+        # قراءة ورقة العمل المحددة (sheet1)
+        df = pd.read_excel(file_stream, sheet_name=SHEET_NAME)
         
-        # إرسال إشعار نجاح الاتصال بـ Drive
-        send_telegram("✅ تم الاتصال بـ Google Drive بنجاح")
-        print("✅ تم الاتصال بـ Google Drive")
-        
-        # 5. فتح الملف
-        send_telegram("🔄 جاري فتح Google Sheet...")
-        spreadsheet = client.open_by_key(SHEET_ID)
-        sheet = spreadsheet.sheet1
-        
-        # إرسال إشعار نجاح فتح الملف
-        send_telegram("✅ تم فتح Google Sheet بنجاح")
-        print("✅ تم فتح Google Sheet")
-        
-        # 6. قراءة البيانات
-        all_values = sheet.get_all_values()
-        row_count = len(all_values)
-        col_count = len(all_values[0]) if row_count > 0 else 0
-        
-        # 7. إرسال معلومات الملف
-        info_msg = f"""
-📊 <b>معلومات Google Sheet</b>
-─────────────────────
-📄 اسم الورقة: {sheet.title}
-📏 عدد الصفوف: {row_count}
-📐 عدد الأعمدة: {col_count}
-🔑 حساب الخدمة: {service_email[:30]}...
-📅 الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-        """
-        send_telegram(info_msg)
-        
-        print(f"\n✨ تم بنجاح! {row_count} صف × {col_count} عمود")
-        print("📱 تحقق من Telegram")
-        
+        await context.bot.send_message(
+            chat_id=chat_id, 
+            text=f"📊 تم الدخول إلى ورقة العمل ({SHEET_NAME}) بنجاح.\nعدد الأسطر المكتشفة: {len(df)}"
+        )
+
     except Exception as e:
-        error_msg = f"❌ خطأ: {str(e)}"
-        print(error_msg)
-        send_telegram(error_msg)
+        await update.message.reply_text(f"❌ فشل الاتصال: {str(e)}\nتأكد من مشاركة الملف مع إيميل حساب الخدمة.")
 
-# ============================================
-# التشغيل
-# ============================================
+async def start(update, context):
+    await update.message.reply_text("🤖 بوت الأتمتة جاهز.\nاستخدم /check لاختبار ربط Google Sheet.")
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    # بناء التطبيق مع خاصية تنظيف التحديثات المعلقة لحل مشكلة الـ Conflict
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("check", check_connection))
+    
+    print("🚀 البوت يعمل الآن.. بانتظار أمر /check")
+    application.run_polling(drop_pending_updates=True)

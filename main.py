@@ -1,46 +1,124 @@
-# test.py - اختبر اتصالك أولاً
+# main.py
 import gspread
-import json
+import telegram
+import os
+from datetime import datetime
 
-print("=" * 40)
-print("اختبار الاتصال بـ Google Sheets")
-print("=" * 40)
+# ============================================
+# بياناتك - تم تحديثها
+# ============================================
 
-# 1. التحقق من ملف JSON
-try:
-    with open("credentials.json", "r") as f:
-        data = json.load(f)
-        print("✅ 1/4 ملف JSON موجود وصالح")
-        print(f"   📧 البريد: {data['client_email']}")
-except Exception as e:
-    print(f"❌ 1/4 ملف JSON: {e}")
-    exit()
+TELEGRAM_TOKEN = "8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo"
+TELEGRAM_CHAT_ID = "5067771509"
+FILE_ID = "1RAWDvovHZZ7mEj9A0soo2XnPOudVadxu8KuZeQaR-dM"  # معرف الملف الجديد
+SHEET_NAME = "sheet1"  # اسم الورقة
+JSON_KEYFILE = "credentials.json"  # ملف JSON الخاص بك
 
-# 2. الاتصال بخدمة Google
-try:
-    client = gspread.service_account(filename="credentials.json")
-    print("✅ 2/4 الاتصال بـ Google Sheets ناجح")
-except Exception as e:
-    print(f"❌ 2/4 فشل الاتصال: {e}")
-    exit()
+# ============================================
+# دالة إرسال إلى Telegram
+# ============================================
 
-# 3. فتح الملف بالمعرف الجديد
-FILE_ID = "1RAWDvovHZZ7mEj9A0soo2XnPOudVadxu8KuZeQaR-dM"
-try:
-    spreadsheet = client.open_by_key(FILE_ID)
-    print(f"✅ 3/4 تم فتح الملف: {spreadsheet.title}")
-except Exception as e:
-    print(f"❌ 3/4 فشل فتح الملف: {e}")
-    print("   ⚠️ تأكد من مشاركة الملف مع البريد الإلكتروني أعلاه")
-    exit()
+def send_telegram(message):
+    """إرسال رسالة إلى Telegram"""
+    try:
+        bot = telegram.Bot(token=TELEGRAM_TOKEN)
+        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode='HTML')
+        print("✅ تم الإرسال إلى Telegram")
+        return True
+    except Exception as e:
+        print(f"❌ فشل الإرسال: {e}")
+        return False
 
-# 4. قراءة البيانات
-try:
-    sheet = spreadsheet.sheet1
-    rows = sheet.get_all_values()
-    print(f"✅ 4/4 تم قراءة {len(rows)} صف و {len(rows[0]) if rows else 0} عمود")
-except Exception as e:
-    print(f"❌ 4/4 فشل قراءة البيانات: {e}")
-    exit()
+# ============================================
+# الدالة الرئيسية
+# ============================================
 
-print("\n🎉 كل شيء يعمل! يمكنك تشغيل البرنامج الرئيسي.")
+def main():
+    print("=" * 50)
+    print("🚀 تشغيل برنامج الإشعارات")
+    print("=" * 50)
+    
+    # التحقق من وجود ملف JSON
+    if not os.path.exists(JSON_KEYFILE):
+        error_msg = f"❌ ملف {JSON_KEYFILE} غير موجود!"
+        print(error_msg)
+        send_telegram(error_msg)
+        return
+    
+    try:
+        # 1. الاتصال بـ Google Drive
+        print("🔄 جاري الاتصال بـ Google Drive...")
+        send_telegram("🔄 جاري الاتصال بـ Google Drive...")
+        
+        client = gspread.service_account(filename=JSON_KEYFILE)
+        
+        # إرسال إشعار نجاح الاتصال
+        send_telegram("✅ تم الاتصال بـ Google Drive بنجاح")
+        print("✅ تم الاتصال بـ Google Drive")
+        
+        # 2. فتح ملف Google Sheet
+        print("🔄 جاري فتح Google Sheet...")
+        send_telegram("🔄 جاري فتح Google Sheet...")
+        
+        # فتح الملف باستخدام المعرف الجديد
+        spreadsheet = client.open_by_key(FILE_ID)
+        
+        # محاولة فتح الورقة المحددة
+        try:
+            sheet = spreadsheet.worksheet(SHEET_NAME)
+        except:
+            # إذا لم تجد الاسم، استخدم أول ورقة
+            sheet = spreadsheet.sheet1
+            print(f"⚠️ تم استخدام أول ورقة: {sheet.title}")
+        
+        # إرسال إشعار نجاح الفتح
+        send_telegram("✅ تم فتح Google Sheet بنجاح")
+        print(f"✅ تم فتح الملف: {spreadsheet.title}")
+        print(f"✅ الورقة: {sheet.title}")
+        
+        # 3. قراءة البيانات
+        all_values = sheet.get_all_values()
+        row_count = len(all_values)
+        col_count = len(all_values[0]) if row_count > 0 else 0
+        
+        # 4. إرسال معلومات الملف
+        info_message = f"""
+📊 <b>معلومات Google Sheet</b>
+─────────────────────
+📄 اسم الملف: {spreadsheet.title}
+📋 اسم الورقة: {sheet.title}
+📏 عدد الصفوف: {row_count}
+📐 عدد الأعمدة: {col_count}
+🆔 معرف الملف: {FILE_ID[:15]}...
+📅 الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+        """
+        send_telegram(info_message)
+        
+        # 5. إرسال عينة من البيانات (إذا وجدت)
+        if row_count > 0:
+            sample = "📋 <b>عينة من البيانات (أول 3 صفوف):</b>\n"
+            for i in range(min(3, row_count)):
+                row = all_values[i]
+                sample += f"\n<b>الصف {i+1}:</b> "
+                # عرض أول 3 أعمدة فقط
+                cells = [str(cell)[:20] for cell in row[:3]]
+                sample += " | ".join(cells)
+                if len(row) > 3:
+                    sample += " ..."
+            send_telegram(sample)
+        
+        print(f"\n✨ تم بنجاح!")
+        print(f"📊 {row_count} صف × {col_count} عمود")
+        print("📱 تحقق من Telegram")
+        
+    except Exception as e:
+        error_msg = f"❌ خطأ: {str(e)}"
+        print(error_msg)
+        send_telegram(error_msg)
+
+# ============================================
+# تشغيل البرنامج
+# ============================================
+
+if __name__ == "__main__":
+    main()

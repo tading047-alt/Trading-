@@ -1,27 +1,21 @@
-# alt_method.py
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-import json
+# test_final.py
+import gspread
 
-SHEET_ID = "1RAWDvovHZZ7mEj9A0soo2XnPOudVadxu8KuZeQaR-dM"
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
+FILE_ID = "1RAWDvovHZZ7mEj9A0soo2XnPOudVadxu8KuZeQaR-dM"
 
-# تحميل credentials
-with open("credentials.json", "r") as f:
-    creds_data = json.load(f)
+print("🔄 جاري اختبار الاتصال...")
 
-# إنشاء credentials
-creds = Credentials.from_service_account_info(creds_data, scopes=SCOPES)
-
-# بناء الخدمة
-service = build('sheets', 'v4', credentials=creds)
-
-# محاولة القراءة
 try:
-    result = service.spreadsheets().values().get(
-        spreadsheetId=SHEET_ID,
-        range='Sheet1!A1:A10'
-    ).execute()
-    print("✅ نجح! البيانات:", result.get('values', []))
+    client = gspread.service_account(filename="credentials.json")
+    print("✅ 1. الاتصال بـ Google Sheets ناجح")
+    
+    sheet = client.open_by_key(FILE_ID).sheet1
+    print(f"✅ 2. تم فتح الملف: {sheet.title}")
+    
+    data = sheet.get_all_values()
+    print(f"✅ 3. تم قراءة {len(data)} صف")
+    
+    print("\n🎉 كل شيء يعمل! الآن شغل main.py")
+    
 except Exception as e:
-    print(f"❌ فشل: {e}")
+    print(f"❌ خطأ: {e}")

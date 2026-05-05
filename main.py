@@ -1,30 +1,30 @@
-# test_auth.py
+# test_with_id.py
 import gspread
 from google.oauth2.service_account import Credentials
 import json
 
-# اقرأ البريد من ملف JSON
-with open("credentials.json", "r") as f:
-    data = json.load(f)
-    email_in_json = data['client_email']
-    print(f"📧 البريد في ملف JSON: {email_in_json}")
+# معرف الملف (من رابطك)
+FILE_ID = "1RAWDvovHZZ7mEj9A0soo2XnPOudVadxu8KuZeQaR-dM"
 
-print("\n⚠️ تأكد من مشاركة ملف 'Produits' مع هذا البريد!")
-print(f"   البريد: {email_in_json}")
-print("   الصلاحية: Editor\n")
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-# اختبار الاتصال
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+print("=" * 50)
+print("اختبار فتح الملف باستخدام ID")
+print("=" * 50)
 
 try:
     creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
     client = gspread.authorize(creds)
     print("✅ الاتصال ناجح")
     
-    # محاولة فتح الملف
-    sheet = client.open('Produits').sheet1
-    print(f"✅ تم فتح الملف: {sheet.spreadsheet.title}")
-    print(f"✅ عدد الصفوف: {len(sheet.get_all_values())}")
+    # فتح الملف باستخدام ID مباشرة
+    spreadsheet = client.open_by_key(FILE_ID)
+    print(f"✅ تم فتح الملف: {spreadsheet.title}")
+    
+    sheet = spreadsheet.sheet1
+    data = sheet.get_all_values()
+    print(f"✅ تم قراءة {len(data)} صف")
+    print(f"🎉 النجاح!")
     
 except Exception as e:
     print(f"❌ فشل: {e}")

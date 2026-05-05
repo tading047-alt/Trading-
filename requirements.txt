@@ -1,8 +1,5 @@
 gspread==6.1.2
 google-auth==2.29.0
 google-auth-oauthlib==1.0.0
-google-auth-httplib2==0.1.1
+google-api-python-client==2.108.0
 python-telegram-bot==13.7
-requests==2.31.0
-httplib2==0.22.0
-oauth2client==4.1.3

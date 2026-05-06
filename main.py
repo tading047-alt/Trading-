@@ -1,27 +1,22 @@
-import io
 import pandas as pd
+import gspread
 from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
 
-SCOPES = ['https://www.googleapis.com/auth/drive']
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
 
-creds = Credentials.from_service_account_file('credentials.json', scopes=SCOPES)
-service = build('drive', 'v3', credentials=creds)
+creds = Credentials.from_service_account_file(
+    "credentials.json",
+    scopes=SCOPES
+)
 
-FILE_ID = 'PUT_FILE_ID_HERE'
+client = gspread.authorize(creds)
 
-request = service.files().get_media(fileId=FILE_ID)
-file = io.BytesIO()
+sheet = client.open_by_key("1RAWDvovHZZ7mEj9A0soo2XnPOudVadxu8KuZeQaR-dM").sheet1
 
-downloader = MediaIoBaseDownload(file, request)
-
-done = False
-while done is False:
-    status, done = downloader.next_chunk()
-
-file.seek(0)
-
-df = pd.read_excel(file)
+data = sheet.get_all_records()
+df = pd.DataFrame(data)
 
 print(df.head())

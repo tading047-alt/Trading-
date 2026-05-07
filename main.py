@@ -264,48 +264,62 @@ while True:
 
             else:
                 continue
+message = f"""
+🟡 BINANCE — 🟡 GOOD SIGNAL
 
-            msg = f"""
-{color} BINANCE — {grade}
+━━━━━━━━━━━━━━━━━━
+🔥 SHORT OPPORTUNITY
+━━━━━━━━━━━━━━━━━━
 
-🔥 ELITE SHORT SIGNAL
+💰 PAIR: {symbol}
+🧠 AI SCORE: {score} / 100
+⚠️ SIGNAL STRENGTH: {grade}
 
-💰 {sym}
+━━━━━━━━━━━━━━━━━━
+📊 MARKET MOVEMENT
+━━━━━━━━━━━━━━━━━━
 
-🧠 AI SCORE:
-{score}/100
+📈 24H CHANGE: {change_24h}%
+⏱ 4H CHANGE: {change_4h}%
+⚡ 1H CHANGE: {change_1h}%
 
-━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━
+🧠 TECHNICAL ANALYSIS
+━━━━━━━━━━━━━━━━━━
 
-📈 24H Pump:
-{c['pump']:.2f}%
+📊 RSI 5M: {rsi_5m}
+📊 RSI 15M: {rsi_15m}
+📊 RSI 1H: {rsi_1h}
 
-━━━━━━━━━━━━━━
+🕯 CANDLE PATTERN:
+✔ Bearish Rejection
 
-📊 RSI:
-{res['rsi']:.2f}
+📉 VOLUME STATUS:
+⚠ Weakening
 
-📏 EMA Stretch:
-{res['stretch']:.2f}%
+📏 EMA DISTANCE:
+{ema_dist}%
 
-━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━
+🎯 TRADE SETUP
+━━━━━━━━━━━━━━━━━━
 
-🎯 SHORT ENTRY:
-{res['entry_low']:.6f}
-→
-{res['entry_high']:.6f}
+🔴 SHORT ENTRY ZONE:
+{entry_low} → {entry_high}
 
-📉 Expected Drop:
--{res['drop']:.2f}%
+📉 EXPECTED DROP:
+{drop}%
 
-⚠️ Reversal Probability:
-{prob}
+━━━━━━━━━━━━━━━━━━
+💼 RISK MANAGEMENT
+━━━━━━━━━━━━━━━━━━
 
-━━━━━━━━━━━━━━
+💵 POSITION SIZE: 5$
+⚡ LEVERAGE: x2 (Isolated)
 
-💵 Position: 5$
-⚡ Leverage: 2x
-🕒 {datetime.now()}
+━━━━━━━━━━━━━━━━━━
+⏱ {datetime.now()}
+━━━━━━━━━━━━━━━━━━
 """
 
             print(msg)

@@ -12,7 +12,7 @@ TELEGRAM_TOKEN = "8628541851:AAGTo4LDtxv8WOy40L5YI7kqIdwv2SLNUKI"
 
 CHAT_IDS = [
     "5067771509",
-    "1-003692815602"
+    "-1003692815602"
 ]
 
 INTERVAL = 180
@@ -31,7 +31,7 @@ def send(msg):
     for chat in CHAT_IDS:
 
         try:
-            requests.post(
+            response = requests.post(
                 url,
                 data={
                     "chat_id": chat,
@@ -40,9 +40,10 @@ def send(msg):
                 },
                 timeout=10
             )
+            print(f"Sent to {chat}: {response.status_code}")
 
-        except:
-            pass
+        except Exception as e:
+            print(f"Error sending to {chat}: {e}")
 
 # =========================================================
 # INDICATORS
@@ -65,7 +66,7 @@ def rsi(series, period=14):
 
 def ema(series, period=20):
 
-    return series.ewm(span=period).mean()
+    return series.ewm(span=period, adjust=False).mean()
 
 # =========================================================
 # BINANCE DATA
@@ -200,6 +201,15 @@ def analyze(symbol, pump):
     entry_high = price * 1.03
 
     drop = stretch * 0.7
+    
+    # إضافة بيانات إضافية للرسالة
+    rsi_5m = r
+    rsi_15m = df["rsi"].iloc[-3] if len(df) >= 3 else r
+    rsi_1h = df["rsi"].iloc[-12] if len(df) >= 12 else r
+    
+    change_24h = pump
+    change_4h = ((df["c"].iloc[-1] / df["c"].iloc[-48]) - 1) * 100 if len(df) >= 48 else pump
+    change_1h = ((df["c"].iloc[-1] / df["c"].iloc[-12]) - 1) * 100 if len(df) >= 12 else pump
 
     return {
         "score": score,
@@ -208,7 +218,13 @@ def analyze(symbol, pump):
         "stretch": stretch,
         "entry_low": entry_low,
         "entry_high": entry_high,
-        "drop": drop
+        "drop": drop,
+        "rsi_5m": rsi_5m,
+        "rsi_15m": rsi_15m,
+        "rsi_1h": rsi_1h,
+        "change_24h": change_24h,
+        "change_4h": change_4h,
+        "change_1h": change_1h
     }
 
 # =========================================================
@@ -226,6 +242,7 @@ while True:
     try:
 
         coins = binance_scan()
+        print(f"Found {len(coins)} coins meeting criteria")
 
         for c in coins:
 
@@ -264,14 +281,16 @@ while True:
 
             else:
                 continue
-message = f"""
-🟡 BINANCE — 🟡 GOOD SIGNAL
+
+            # تصحيح الرسالة - استخدام المتغيرات الصحيحة
+            message = f"""
+{color} BINANCE — {grade}
 
 ━━━━━━━━━━━━━━━━━━
 🔥 SHORT OPPORTUNITY
 ━━━━━━━━━━━━━━━━━━
 
-💰 PAIR: {symbol}
+💰 PAIR: {sym}
 🧠 AI SCORE: {score} / 100
 ⚠️ SIGNAL STRENGTH: {grade}
 
@@ -279,17 +298,17 @@ message = f"""
 📊 MARKET MOVEMENT
 ━━━━━━━━━━━━━━━━━━
 
-📈 24H CHANGE: {change_24h}%
-⏱ 4H CHANGE: {change_4h}%
-⚡ 1H CHANGE: {change_1h}%
+📈 24H CHANGE: {res['change_24h']:.2f}%
+⏱ 4H CHANGE: {res['change_4h']:.2f}%
+⚡ 1H CHANGE: {res['change_1h']:.2f}%
 
 ━━━━━━━━━━━━━━━━━━
 🧠 TECHNICAL ANALYSIS
 ━━━━━━━━━━━━━━━━━━
 
-📊 RSI 5M: {rsi_5m}
-📊 RSI 15M: {rsi_15m}
-📊 RSI 1H: {rsi_1h}
+📊 RSI 5M: {res['rsi_5m']:.2f}
+📊 RSI 15M: {res['rsi_15m']:.2f}
+📊 RSI 1H: {res['rsi_1h']:.2f}
 
 🕯 CANDLE PATTERN:
 ✔ Bearish Rejection
@@ -298,17 +317,17 @@ message = f"""
 ⚠ Weakening
 
 📏 EMA DISTANCE:
-{ema_dist}%
+{res['stretch']:.2f}%
 
 ━━━━━━━━━━━━━━━━━━
 🎯 TRADE SETUP
 ━━━━━━━━━━━━━━━━━━
 
 🔴 SHORT ENTRY ZONE:
-{entry_low} → {entry_high}
+{res['entry_low']:.8f} → {res['entry_high']:.8f}
 
 📉 EXPECTED DROP:
-{drop}%
+{res['drop']:.2f}%
 
 ━━━━━━━━━━━━━━━━━━
 💼 RISK MANAGEMENT
@@ -318,16 +337,17 @@ message = f"""
 ⚡ LEVERAGE: x2 (Isolated)
 
 ━━━━━━━━━━━━━━━━━━
-⏱ {datetime.now()}
+⏱ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 ━━━━━━━━━━━━━━━━━━
 """
 
-            print(msg)
-            send(msg)
+            print(message)
+            send(message)
 
             sent.add(uid)
+            
+        time.sleep(INTERVAL)
 
     except Exception as e:
         print("ERROR:", e)
-
-    time.sleep(INTERVAL)
+        time.sleep(INTERVAL)

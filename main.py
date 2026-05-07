@@ -4,7 +4,7 @@ import requests
 import time
 
 # --- إعدادات التلجرام الخاصة بك ---
-TELEGRAM_TOKEN = '8603477836:AAGG6Outg3Z9vBI-NjWQ3ALJroh_Cye3l2c'
+TELEGRAM_TOKEN = '8643715664:AAH-Th6cUZasbUrOJe6elCJuV_Fn6oTfd5g'
 TELEGRAM_CHAT_ID = '6018153093'
 
 def send_telegram_msg(message):

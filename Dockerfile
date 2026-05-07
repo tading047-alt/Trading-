@@ -1,17 +1,26 @@
-# استخدام نسخة خفيفة من بايثون
-FROM python:3.9-slim
+FROM python:3.11-slim
 
-# ضبط مجلد العمل داخل الحاوية
 WORKDIR /app
 
-# نسخ ملف المكتبات أولاً (للاستفادة من الـ Caching)
-COPY requirements.txt .
+# تثبيت اعتمادات النظام (اختياري - للحصول على أداء أفضل)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# تثبيت المكتبات
+# نسخ وتثبيت مكتبات Python
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# نسخ كود البوت (افترضنا أن اسم ملف الكود هو bot.py)
+# نسخ ملفات المشروع
 COPY main.py .
+COPY .env .
 
-# أمر تشغيل البوت
+# إنشاء مجلد للتسجيلات (logs)
+RUN mkdir -p /app/logs
+
+# تعيين متغيرات البيئة
+ENV PYTHONUNBUFFERED=1
+ENV TZ=UTC
+
+# تشغيل البوت
 CMD ["python", "main.py"]

@@ -6,7 +6,7 @@ import logging
 import time
 
 # ======================== الإعدادات ========================
-TELEGRAM_BOT_TOKEN = "8716390236:AAEjPGJSYXN5FrqsuI845KhQoVzMfM_Suoo"
+TELEGRAM_BOT_TOKEN = "8628541851:AAGTo4LDtxv8WOy40L5YI7kqIdwv2SLNUKI"
 TELEGRAM_CHAT_ID = "5067771509"
 
 # إعدادات التسجيل

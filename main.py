@@ -1,13 +1,14 @@
 import time
 import requests
 import pandas as pd
+import numpy as np
 from datetime import datetime
 
 # =========================================================
 # CONFIG
 # =========================================================
 
-TOKEN = "8628541851:AAGTo4LDtxv8WOy40L5YI7kqIdwv2SLNUKI"
+TELEGRAM_TOKEN = "8628541851:AAGTo4LDtxv8WOy40L5YI7kqIdwv2SLNUKI"
 
 CHAT_IDS = [
     "5067771509",
@@ -16,53 +17,35 @@ CHAT_IDS = [
 
 INTERVAL = 180
 
-# خلفيات المنصات
-PLATFORM_BG = {
-    "BINANCE": "https://i.imgur.com/binance_bg.jpg",
-    "BYBIT": "https://i.imgur.com/bybit_bg.jpg",
-    "KUCOIN": "https://i.imgur.com/kucoin_bg.jpg",
-    "GATEIO": "https://i.imgur.com/gate_bg.jpg"
-}
+MIN_PUMP = 10
+MIN_VOLUME = 200000
 
 # =========================================================
-# TELEGRAM SEND PHOTO
+# TELEGRAM
 # =========================================================
 
-def send_photo(chat_id, image, caption):
+def send(msg):
 
-    url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
-
-    requests.post(url, data={
-        "chat_id": chat_id,
-        "photo": image,
-        "caption": caption,
-        "parse_mode": "HTML"
-    })
-
-# =========================================================
-# SEND ALERT
-# =========================================================
-
-def send(exchange, caption):
-
-    img = PLATFORM_BG.get(exchange)
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
     for chat in CHAT_IDS:
 
-        if img:
-            send_photo(chat, img, caption)
-        else:
+        try:
             requests.post(
-                f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+                url,
                 data={
                     "chat_id": chat,
-                    "text": caption,
+                    "text": msg,
                     "parse_mode": "HTML"
-                }
+                },
+                timeout=10
             )
 
+        except:
+            pass
+
 # =========================================================
-# RSI
+# INDICATORS
 # =========================================================
 
 def rsi(series, period=14):
@@ -79,11 +62,9 @@ def rsi(series, period=14):
 
     return 100 - (100 / (1 + rs))
 
-# =========================================================
-# EMA
-# =========================================================
 
 def ema(series, period=20):
+
     return series.ewm(span=period).mean()
 
 # =========================================================
@@ -92,7 +73,7 @@ def ema(series, period=20):
 
 def klines(symbol):
 
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit=120"
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit=200"
 
     data = requests.get(url).json()
 
@@ -102,22 +83,22 @@ def klines(symbol):
 
     df.columns = ["t","o","h","l","c","v"]
 
-    for c in ["o","h","l","c","v"]:
-        df[c] = pd.to_numeric(df[c])
+    for col in ["o","h","l","c","v"]:
+        df[col] = pd.to_numeric(df[col])
 
     return df
 
 # =========================================================
-# SCAN MARKET
+# FILTER COINS
 # =========================================================
 
-def scan():
+def binance_scan():
 
     url = "https://api.binance.com/api/v3/ticker/24hr"
 
     data = requests.get(url).json()
 
-    coins = []
+    out = []
 
     for c in data:
 
@@ -131,9 +112,9 @@ def scan():
             pump = float(c["priceChangePercent"])
             vol = float(c["quoteVolume"])
 
-            if pump > 10 and vol > 200000:
+            if pump > MIN_PUMP and vol > MIN_VOLUME:
 
-                coins.append({
+                out.append({
                     "symbol": sym,
                     "pump": pump,
                     "exchange": "BINANCE"
@@ -142,13 +123,46 @@ def scan():
         except:
             continue
 
-    return coins
+    return out
 
 # =========================================================
-# ANALYSIS
+# PATTERNS
 # =========================================================
 
-def analyze(symbol):
+def wick(df):
+
+    c = df.iloc[-1]
+
+    body = abs(c["c"] - c["o"])
+    upper = c["h"] - max(c["c"], c["o"])
+
+    if body == 0:
+        body = 0.001
+
+    return upper / body > 2
+
+
+def volume_weak(df):
+
+    return df["v"].tail(3).mean() < df["v"].tail(15).mean()
+
+
+def bearish(df):
+
+    prev = df.iloc[-2]
+    curr = df.iloc[-1]
+
+    return (
+        prev["c"] > prev["o"]
+        and curr["c"] < curr["o"]
+        and curr["o"] > prev["c"]
+    )
+
+# =========================================================
+# ANALYZE
+# =========================================================
+
+def analyze(symbol, pump):
 
     df = klines(symbol)
 
@@ -158,23 +172,43 @@ def analyze(symbol):
     df["ema"] = ema(df["c"])
 
     r = df["rsi"].iloc[-1]
-    e = df["ema"].iloc[-1]
+    ema20 = df["ema"].iloc[-1]
 
-    stretch = ((price - e) / e) * 100
+    stretch = ((price - ema20) / ema20) * 100
 
     score = 0
 
     if r > 65:
         score += 20
+
     if r > 75:
-        score += 15
+        score += 10
+
     if stretch > 5:
         score += 10
 
+    if wick(df):
+        score += 15
+
+    if volume_weak(df):
+        score += 15
+
+    if bearish(df):
+        score += 20
+
+    entry_low = price * 1.01
+    entry_high = price * 1.03
+
+    drop = stretch * 0.7
+
     return {
         "score": score,
+        "price": price,
         "rsi": r,
-        "stretch": stretch
+        "stretch": stretch,
+        "entry_low": entry_low,
+        "entry_high": entry_high,
+        "drop": drop
     }
 
 # =========================================================
@@ -183,22 +217,29 @@ def analyze(symbol):
 
 sent = set()
 
-print("🚀 BOT STARTED")
+print("STARTED V3 SCANNER")
+
+send("🚀 V3 MULTI SIGNAL SCANNER STARTED")
 
 while True:
 
     try:
 
-        coins = scan()
+        coins = binance_scan()
 
         for c in coins:
 
             sym = c["symbol"]
 
-            if sym in sent:
+            uid = sym
+
+            if uid in sent:
                 continue
 
-            res = analyze(sym)
+            res = analyze(sym, c["pump"])
+
+            if not res:
+                continue
 
             score = res["score"]
 
@@ -224,40 +265,53 @@ while True:
             else:
                 continue
 
-            # =================================================
-            # FINAL ALERT UI
-            # =================================================
+            msg = f"""
+{color} BINANCE — {grade}
 
-            caption = f"""
-🔥 <b>ELITE SHORT SIGNAL</b>
+🔥 ELITE SHORT SIGNAL
 
-💰 <b>{sym}</b>
-🧠 AI SCORE: <b>{score}/100</b>
-{color} {grade}
+💰 {sym}
 
-━━━━━━━━━━━━━━
-📊 RSI: {res['rsi']:.2f}
-📏 EMA STRETCH: {res['stretch']:.2f}%
+🧠 AI SCORE:
+{score}/100
 
 ━━━━━━━━━━━━━━
-🎯 ENTRY:
-Market Zone Detected
 
-📉 EXPECTED DROP:
-Auto-calculated
+📈 24H Pump:
+{c['pump']:.2f}%
 
 ━━━━━━━━━━━━━━
-⚡ PROBABILITY: {prob}
-💵 POSITION: 5$ | x2 LEVERAGE
 
-⏱ {datetime.now()}
+📊 RSI:
+{res['rsi']:.2f}
+
+📏 EMA Stretch:
+{res['stretch']:.2f}%
+
+━━━━━━━━━━━━━━
+
+🎯 SHORT ENTRY:
+{res['entry_low']:.6f}
+→
+{res['entry_high']:.6f}
+
+📉 Expected Drop:
+-{res['drop']:.2f}%
+
+⚠️ Reversal Probability:
+{prob}
+
+━━━━━━━━━━━━━━
+
+💵 Position: 5$
+⚡ Leverage: 2x
+🕒 {datetime.now()}
 """
 
-            print(caption)
+            print(msg)
+            send(msg)
 
-            send(c["exchange"], caption)
-
-            sent.add(sym)
+            sent.add(uid)
 
     except Exception as e:
         print("ERROR:", e)

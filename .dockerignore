@@ -1,12 +1,5 @@
-
-__pycache__
+.env
+__pycache__/
 *.pyc
-*.pyo
-*.pyd
-.Python
-.env.local
-.git
-.gitignore
-README.md
-.vscode
-.idea
+logs/
+*.log

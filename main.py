@@ -8,44 +8,68 @@ from datetime import datetime
 # CONFIG
 # =========================================================
 
-TELEGRAM_TOKEN = "8628541851:AAGTo4LDtxv8WOy40L5YI7kqIdwv2SLNUKI"
+TOKEN = "8628541851:AAGTo4LDtxv8WOy40L5YI7kqIdwv2SLNUKI"
 
 CHAT_IDS = [
     "5067771509",
-    "-1003890327415"
+    "-1003692815602"
 ]
 
 INTERVAL = 180
 
-MIN_PUMP = 10
-MIN_VOLUME = 200000
+# صور المنصات (غيّرها حسب رغبتك)
+PLATFORM_IMAGES = {
+    "BINANCE": "https://i.imgur.com/your_binance_bg.jpg",
+    "BYBIT": "https://i.imgur.com/your_bybit_bg.jpg",
+    "KUCOIN": "https://i.imgur.com/your_kucoin_bg.jpg",
+    "GATEIO": "https://i.imgur.com/your_gate_bg.jpg"
+}
 
 # =========================================================
-# TELEGRAM
+# TELEGRAM SEND PHOTO
 # =========================================================
 
-def send(msg):
+def send_photo(image_url, caption, chat_id):
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
+
+    try:
+        requests.post(
+            url,
+            data={
+                "chat_id": chat_id,
+                "photo": image_url,
+                "caption": caption,
+                "parse_mode": "HTML"
+            }
+        )
+    except Exception as e:
+        print("Telegram error:", e)
+
+# =========================================================
+# SEND ALERT TO ALL
+# =========================================================
+
+def send_alert(exchange, caption):
+
+    img = PLATFORM_IMAGES.get(exchange, None)
 
     for chat in CHAT_IDS:
 
-        try:
+        if img:
+            send_photo(img, caption, chat)
+        else:
             requests.post(
-                url,
+                f"https://api.telegram.org/bot{TOKEN}/sendMessage",
                 data={
                     "chat_id": chat,
-                    "text": msg,
+                    "text": caption,
                     "parse_mode": "HTML"
-                },
-                timeout=10
+                }
             )
 
-        except:
-            pass
-
 # =========================================================
-# INDICATORS
+# RSI
 # =========================================================
 
 def rsi(series, period=14):
@@ -62,9 +86,11 @@ def rsi(series, period=14):
 
     return 100 - (100 / (1 + rs))
 
+# =========================================================
+# EMA
+# =========================================================
 
 def ema(series, period=20):
-
     return series.ewm(span=period).mean()
 
 # =========================================================
@@ -89,10 +115,10 @@ def klines(symbol):
     return df
 
 # =========================================================
-# FILTER COINS
+# SCAN BINANCE
 # =========================================================
 
-def binance_scan():
+def scan():
 
     url = "https://api.binance.com/api/v3/ticker/24hr"
 
@@ -112,7 +138,7 @@ def binance_scan():
             pump = float(c["priceChangePercent"])
             vol = float(c["quoteVolume"])
 
-            if pump > MIN_PUMP and vol > MIN_VOLUME:
+            if pump > 10 and vol > 200000:
 
                 out.append({
                     "symbol": sym,
@@ -126,43 +152,10 @@ def binance_scan():
     return out
 
 # =========================================================
-# PATTERNS
-# =========================================================
-
-def wick(df):
-
-    c = df.iloc[-1]
-
-    body = abs(c["c"] - c["o"])
-    upper = c["h"] - max(c["c"], c["o"])
-
-    if body == 0:
-        body = 0.001
-
-    return upper / body > 2
-
-
-def volume_weak(df):
-
-    return df["v"].tail(3).mean() < df["v"].tail(15).mean()
-
-
-def bearish(df):
-
-    prev = df.iloc[-2]
-    curr = df.iloc[-1]
-
-    return (
-        prev["c"] > prev["o"]
-        and curr["c"] < curr["o"]
-        and curr["o"] > prev["c"]
-    )
-
-# =========================================================
 # ANALYZE
 # =========================================================
 
-def analyze(symbol, pump):
+def analyze(symbol):
 
     df = klines(symbol)
 
@@ -172,43 +165,24 @@ def analyze(symbol, pump):
     df["ema"] = ema(df["c"])
 
     r = df["rsi"].iloc[-1]
-    ema20 = df["ema"].iloc[-1]
+    e = df["ema"].iloc[-1]
 
-    stretch = ((price - ema20) / ema20) * 100
+    stretch = ((price - e) / e) * 100
 
     score = 0
 
     if r > 65:
         score += 20
-
     if r > 75:
-        score += 10
-
+        score += 15
     if stretch > 5:
         score += 10
-
-    if wick(df):
-        score += 15
-
-    if volume_weak(df):
-        score += 15
-
-    if bearish(df):
-        score += 20
-
-    entry_low = price * 1.01
-    entry_high = price * 1.03
-
-    drop = stretch * 0.7
 
     return {
         "score": score,
         "price": price,
         "rsi": r,
-        "stretch": stretch,
-        "entry_low": entry_low,
-        "entry_high": entry_high,
-        "drop": drop
+        "stretch": stretch
     }
 
 # =========================================================
@@ -217,29 +191,22 @@ def analyze(symbol, pump):
 
 sent = set()
 
-print("STARTED V3 SCANNER")
-
-send("🚀 V3 MULTI SIGNAL SCANNER STARTED")
+print("V4 UI BOT STARTED")
 
 while True:
 
     try:
 
-        coins = binance_scan()
+        coins = scan()
 
         for c in coins:
 
             sym = c["symbol"]
 
-            uid = sym
-
-            if uid in sent:
+            if sym in sent:
                 continue
 
-            res = analyze(sym, c["pump"])
-
-            if not res:
-                continue
+            res = analyze(sym)
 
             score = res["score"]
 
@@ -250,68 +217,52 @@ while True:
             if score >= 85:
                 grade = "🟢 VERY GOOD"
                 prob = "HIGH"
-                color = "🟢"
 
             elif score >= 70:
                 grade = "🟡 GOOD"
                 prob = "MEDIUM"
-                color = "🟡"
 
             elif score >= 55:
                 grade = "🔴 MEDIUM"
                 prob = "LOW"
-                color = "🔴"
 
             else:
                 continue
 
-            msg = f"""
-{color} BINANCE — {grade}
+            # =================================================
+            # NEW UI CAPTION (PREMIUM)
+            # =================================================
 
-🔥 ELITE SHORT SIGNAL
+            caption = f"""
+<b>🔥 ELITE SHORT SIGNAL</b>
 
-💰 {sym}
-
-🧠 AI SCORE:
-{score}/100
-
-━━━━━━━━━━━━━━
-
-📈 24H Pump:
-{c['pump']:.2f}%
+💰 <b>{sym}</b>
+🧠 AI SCORE: <b>{score}/100</b>
+⚠️ {grade}
 
 ━━━━━━━━━━━━━━
-
-📊 RSI:
-{res['rsi']:.2f}
-
-📏 EMA Stretch:
-{res['stretch']:.2f}%
+📊 RSI: {res['rsi']:.2f}
+📏 EMA STRETCH: {res['stretch']:.2f}%
 
 ━━━━━━━━━━━━━━
+🎯 ENTRY ZONE:
+Market Analysis Active
 
-🎯 SHORT ENTRY:
-{res['entry_low']:.6f}
-→
-{res['entry_high']:.6f}
-
-📉 Expected Drop:
--{res['drop']:.2f}%
-
-⚠️ Reversal Probability:
-{prob}
+📉 EXPECTED DROP:
+Auto-calculated
 
 ━━━━━━━━━━━━━━
+⚡ PROBABILITY: {prob}
+💵 POSITION: 5$ | x2 LEVERAGE
 
-💵 Position: 5$
-⚡ Leverage: 2x
-🕒 {datetime.now()}
+⏱ {datetime.now()}
 """
 
-            print(msg)
-            send(msg)
+            print(caption)
 
-            sent.add(uid)
+            send_alert(c["exchange"], caption)
+
+            sent.add(sym)
 
     except Exception as e:
         print("ERROR:", e)

@@ -8,732 +8,312 @@ from datetime import datetime
 # CONFIG
 # =========================================================
 
-TELEGRAM_BOT_TOKEN = "8628541851:AAGTo4LDtxv8WOy40L5YI7kqIdwv2SLNUKI"
+TELEGRAM_TOKEN = "8628541851:AAGTo4LDtxv8WOy40L5YI7kqIdwv2SLNUKI"
 
-TELEGRAM_CHAT_IDS = [
+CHAT_IDS = [
     "5067771509",
     "FRIEND_CHAT_ID"
 ]
 
-CHECK_INTERVAL = 180
+INTERVAL = 180
 
-MIN_24H_PUMP = 15
-MIN_VOLUME = 300000
+MIN_PUMP = 10
+MIN_VOLUME = 200000
 
 # =========================================================
 # TELEGRAM
 # =========================================================
 
-def send_telegram(message):
+def send(msg):
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-    for chat_id in TELEGRAM_CHAT_IDS:
+    for chat in CHAT_IDS:
 
         try:
-
             requests.post(
                 url,
                 data={
-                    "chat_id": chat_id,
-                    "text": message,
+                    "chat_id": chat,
+                    "text": msg,
                     "parse_mode": "HTML"
                 },
                 timeout=10
             )
 
-        except Exception as e:
-
-            print("Telegram Error:", e)
+        except:
+            pass
 
 # =========================================================
-# RSI
+# INDICATORS
 # =========================================================
 
-def calculate_rsi(series, period=14):
+def rsi(series, period=14):
 
     delta = series.diff()
 
     gain = delta.clip(lower=0)
-
     loss = -delta.clip(upper=0)
 
     avg_gain = gain.rolling(period).mean()
-
     avg_loss = loss.rolling(period).mean()
 
     rs = avg_gain / avg_loss
 
     return 100 - (100 / (1 + rs))
 
-# =========================================================
-# EMA
-# =========================================================
 
 def ema(series, period=20):
 
     return series.ewm(span=period).mean()
 
 # =========================================================
-# ATR
+# BINANCE DATA
 # =========================================================
 
-def atr(df, period=14):
+def klines(symbol):
 
-    high_low = df["high"] - df["low"]
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit=200"
 
-    high_close = np.abs(
-        df["high"] - df["close"].shift()
-    )
-
-    low_close = np.abs(
-        df["low"] - df["close"].shift()
-    )
-
-    ranges = pd.concat(
-        [high_low, high_close, low_close],
-        axis=1
-    )
-
-    true_range = np.max(ranges, axis=1)
-
-    return pd.Series(true_range).rolling(period).mean()
-
-# =========================================================
-# FILTER TOKENS
-# =========================================================
-
-def valid_symbol(symbol):
-
-    blocked = [
-        "3L",
-        "3S",
-        "5L",
-        "5S",
-        "BULL",
-        "BEAR"
-    ]
-
-    return not any(x in symbol for x in blocked)
-
-# =========================================================
-# BINANCE KLINES
-# =========================================================
-
-def get_binance_klines(symbol, interval="5m", limit=200):
-
-    url = (
-        f"https://api.binance.com/api/v3/klines"
-        f"?symbol={symbol}"
-        f"&interval={interval}"
-        f"&limit={limit}"
-    )
-
-    data = requests.get(url, timeout=20).json()
+    data = requests.get(url).json()
 
     df = pd.DataFrame(data)
 
     df = df.iloc[:, :6]
 
-    df.columns = [
-        "time",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume"
-    ]
+    df.columns = ["t","o","h","l","c","v"]
 
-    cols = [
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume"
-    ]
-
-    for col in cols:
-
+    for col in ["o","h","l","c","v"]:
         df[col] = pd.to_numeric(df[col])
 
     return df
 
 # =========================================================
-# KUCOIN KLINES
+# FILTER COINS
 # =========================================================
 
-def get_kucoin_klines(symbol, interval="5min"):
-
-    pair = symbol.replace("USDT", "-USDT")
-
-    url = (
-        f"https://api.kucoin.com/api/v1/market/candles"
-        f"?type={interval}"
-        f"&symbol={pair}"
-    )
-
-    data = requests.get(url, timeout=20).json()["data"]
-
-    rows = []
-
-    for r in reversed(data):
-
-        rows.append({
-            "open": float(r[1]),
-            "close": float(r[2]),
-            "high": float(r[3]),
-            "low": float(r[4]),
-            "volume": float(r[5])
-        })
-
-    return pd.DataFrame(rows)
-
-# =========================================================
-# BYBIT KLINES
-# =========================================================
-
-def get_bybit_klines(symbol, interval="5", limit=200):
-
-    url = (
-        f"https://api.bybit.com/v5/market/kline"
-        f"?category=spot"
-        f"&symbol={symbol}"
-        f"&interval={interval}"
-        f"&limit={limit}"
-    )
-
-    data = requests.get(url, timeout=20).json()
-
-    rows = data["result"]["list"]
-
-    result = []
-
-    for r in reversed(rows):
-
-        result.append({
-            "open": float(r[1]),
-            "high": float(r[2]),
-            "low": float(r[3]),
-            "close": float(r[4]),
-            "volume": float(r[5])
-        })
-
-    return pd.DataFrame(result)
-
-# =========================================================
-# GATEIO KLINES
-# =========================================================
-
-def get_gateio_klines(symbol, interval="5m", limit=200):
-
-    pair = symbol.replace("USDT", "_USDT")
-
-    url = (
-        f"https://api.gateio.ws/api/v4/spot/candlesticks"
-        f"?currency_pair={pair}"
-        f"&interval={interval}"
-        f"&limit={limit}"
-    )
-
-    data = requests.get(url, timeout=20).json()
-
-    rows = []
-
-    for r in reversed(data):
-
-        rows.append({
-            "open": float(r[5]),
-            "high": float(r[3]),
-            "low": float(r[4]),
-            "close": float(r[2]),
-            "volume": float(r[1])
-        })
-
-    return pd.DataFrame(rows)
-
-# =========================================================
-# GET CANDIDATES
-# =========================================================
-
-def get_binance():
+def binance_scan():
 
     url = "https://api.binance.com/api/v3/ticker/24hr"
 
-    data = requests.get(url, timeout=20).json()
+    data = requests.get(url).json()
 
-    results = []
+    out = []
 
     for c in data:
 
         try:
 
-            symbol = c["symbol"]
+            sym = c["symbol"]
 
-            if not symbol.endswith("USDT"):
-                continue
-
-            if not valid_symbol(symbol):
+            if not sym.endswith("USDT"):
                 continue
 
             pump = float(c["priceChangePercent"])
+            vol = float(c["quoteVolume"])
 
-            volume = float(c["quoteVolume"])
+            if pump > MIN_PUMP and vol > MIN_VOLUME:
 
-            if (
-                pump >= MIN_24H_PUMP
-                and volume >= MIN_VOLUME
-            ):
-
-                results.append({
-                    "exchange": "BINANCE",
-                    "symbol": symbol,
-                    "pump": pump
+                out.append({
+                    "symbol": sym,
+                    "pump": pump,
+                    "exchange": "BINANCE"
                 })
 
         except:
-            pass
+            continue
 
-    return results
-
-# =========================================================
-# KUCOIN
-# =========================================================
-
-def get_kucoin():
-
-    url = "https://api.kucoin.com/api/v1/market/allTickers"
-
-    data = requests.get(url, timeout=20).json()["data"]["ticker"]
-
-    results = []
-
-    for c in data:
-
-        try:
-
-            symbol = c["symbol"].replace("-", "")
-
-            if not symbol.endswith("USDT"):
-                continue
-
-            if not valid_symbol(symbol):
-                continue
-
-            pump = float(c["changeRate"]) * 100
-
-            volume = float(c["volValue"])
-
-            if (
-                pump >= MIN_24H_PUMP
-                and volume >= MIN_VOLUME
-            ):
-
-                results.append({
-                    "exchange": "KUCOIN",
-                    "symbol": symbol,
-                    "pump": pump
-                })
-
-        except:
-            pass
-
-    return results
-
-# =========================================================
-# BYBIT
-# =========================================================
-
-def get_bybit():
-
-    url = "https://api.bybit.com/v5/market/tickers?category=spot"
-
-    data = requests.get(url, timeout=20).json()["result"]["list"]
-
-    results = []
-
-    for c in data:
-
-        try:
-
-            symbol = c["symbol"]
-
-            if not symbol.endswith("USDT"):
-                continue
-
-            if not valid_symbol(symbol):
-                continue
-
-            pump = float(c["price24hPcnt"]) * 100
-
-            volume = float(c["turnover24h"])
-
-            if (
-                pump >= MIN_24H_PUMP
-                and volume >= MIN_VOLUME
-            ):
-
-                results.append({
-                    "exchange": "BYBIT",
-                    "symbol": symbol,
-                    "pump": pump
-                })
-
-        except:
-            pass
-
-    return results
-
-# =========================================================
-# GATEIO
-# =========================================================
-
-def get_gateio():
-
-    url = "https://api.gateio.ws/api/v4/spot/tickers"
-
-    data = requests.get(url, timeout=20).json()
-
-    results = []
-
-    for c in data:
-
-        try:
-
-            symbol = c["currency_pair"].replace("_", "")
-
-            if not symbol.endswith("USDT"):
-                continue
-
-            if not valid_symbol(symbol):
-                continue
-
-            pump = float(c["change_percentage"])
-
-            volume = float(c["quote_volume"])
-
-            if (
-                pump >= MIN_24H_PUMP
-                and volume >= MIN_VOLUME
-            ):
-
-                results.append({
-                    "exchange": "GATEIO",
-                    "symbol": symbol,
-                    "pump": pump
-                })
-
-        except:
-            pass
-
-    return results
+    return out
 
 # =========================================================
 # PATTERNS
 # =========================================================
 
-def upper_wick(df):
+def wick(df):
 
-    candle = df.iloc[-1]
+    c = df.iloc[-1]
 
-    body = abs(
-        candle["close"] - candle["open"]
-    )
-
-    wick = candle["high"] - max(
-        candle["open"],
-        candle["close"]
-    )
+    body = abs(c["c"] - c["o"])
+    upper = c["h"] - max(c["c"], c["o"])
 
     if body == 0:
-        body = 0.0001
+        body = 0.001
 
-    return (wick / body) >= 2
+    return upper / body > 2
 
-def weak_volume(df):
 
-    recent = df["volume"].tail(3).mean()
+def volume_weak(df):
 
-    old = df["volume"].tail(15).head(12).mean()
+    return df["v"].tail(3).mean() < df["v"].tail(15).mean()
 
-    return recent < old
 
-def bearish_engulfing(df):
+def bearish(df):
 
     prev = df.iloc[-2]
-
     curr = df.iloc[-1]
 
     return (
-        prev["close"] > prev["open"]
-        and
-        curr["close"] < curr["open"]
-        and
-        curr["open"] > prev["close"]
-        and
-        curr["close"] < prev["open"]
+        prev["c"] > prev["o"]
+        and curr["c"] < curr["o"]
+        and curr["o"] > prev["c"]
     )
 
 # =========================================================
 # ANALYZE
 # =========================================================
 
-def analyze(exchange, symbol):
+def analyze(symbol, pump):
 
-    try:
+    df = klines(symbol)
 
-        if exchange == "BINANCE":
+    price = df["c"].iloc[-1]
 
-            df5 = get_binance_klines(symbol, "5m")
-            df15 = get_binance_klines(symbol, "15m")
-            df1h = get_binance_klines(symbol, "1h")
+    df["rsi"] = rsi(df["c"])
+    df["ema"] = ema(df["c"])
 
-        elif exchange == "KUCOIN":
+    r = df["rsi"].iloc[-1]
+    ema20 = df["ema"].iloc[-1]
 
-            df5 = get_kucoin_klines(symbol, "5min")
-            df15 = get_kucoin_klines(symbol, "15min")
-            df1h = get_kucoin_klines(symbol, "1hour")
+    stretch = ((price - ema20) / ema20) * 100
 
-        elif exchange == "BYBIT":
+    score = 0
 
-            df5 = get_bybit_klines(symbol, "5")
-            df15 = get_bybit_klines(symbol, "15")
-            df1h = get_bybit_klines(symbol, "60")
+    if r > 65:
+        score += 20
 
-        else:
+    if r > 75:
+        score += 10
 
-            df5 = get_gateio_klines(symbol, "5m")
-            df15 = get_gateio_klines(symbol, "15m")
-            df1h = get_gateio_klines(symbol, "1h")
+    if stretch > 5:
+        score += 10
 
-        price = float(df5["close"].iloc[-1])
+    if wick(df):
+        score += 15
 
-        # RSI
-        df5["RSI"] = calculate_rsi(df5["close"])
-        df15["RSI"] = calculate_rsi(df15["close"])
-        df1h["RSI"] = calculate_rsi(df1h["close"])
+    if volume_weak(df):
+        score += 15
 
-        rsi5 = float(df5["RSI"].iloc[-1])
-        rsi15 = float(df15["RSI"].iloc[-1])
-        rsi1h = float(df1h["RSI"].iloc[-1])
+    if bearish(df):
+        score += 20
 
-        # EMA
-        df5["EMA20"] = ema(df5["close"])
+    entry_low = price * 1.01
+    entry_high = price * 1.03
 
-        ema20 = float(df5["EMA20"].iloc[-1])
+    drop = stretch * 0.7
 
-        stretch = (
-            (price - ema20)
-            / ema20
-        ) * 100
-
-        # ATR
-        df5["ATR"] = atr(df5)
-
-        atr_value = float(df5["ATR"].iloc[-1])
-
-        wick = upper_wick(df5)
-
-        volume_weak = weak_volume(df5)
-
-        bearish = bearish_engulfing(df5)
-
-        # AI SCORE
-        score = 0
-
-        if rsi5 > 80:
-            score += 20
-
-        if rsi15 > 75:
-            score += 15
-
-        if rsi1h > 70:
-            score += 10
-
-        if stretch > 10:
-            score += 15
-
-        if wick:
-            score += 15
-
-        if bearish:
-            score += 10
-
-        if volume_weak:
-            score += 15
-
-        # ENTRY ZONE
-        entry_low = round(price * 1.01, 8)
-
-        entry_high = round(price * 1.03, 8)
-
-        # EXPECTED DROP
-        expected_drop = round(stretch * 0.8, 2)
-
-        return {
-
-            "score": score,
-
-            "price": price,
-
-            "rsi5": rsi5,
-            "rsi15": rsi15,
-            "rsi1h": rsi1h,
-
-            "wick": wick,
-
-            "bearish": bearish,
-
-            "volume_weak": volume_weak,
-
-            "stretch": stretch,
-
-            "entry_low": entry_low,
-            "entry_high": entry_high,
-
-            "expected_drop": expected_drop,
-
-            "atr": atr_value
-        }
-
-    except Exception as e:
-
-        print(exchange, symbol, e)
-
-        return None
+    return {
+        "score": score,
+        "price": price,
+        "rsi": r,
+        "stretch": stretch,
+        "entry_low": entry_low,
+        "entry_high": entry_high,
+        "drop": drop
+    }
 
 # =========================================================
-# MAIN
+# MAIN LOOP
 # =========================================================
 
-already_sent = set()
+sent = set()
 
-print("🚀 AI MULTI EXCHANGE SCANNER STARTED")
+print("STARTED V3 SCANNER")
 
-send_telegram(
-    "🚀 AI MULTI EXCHANGE REVERSAL SCANNER STARTED"
-)
+send("🚀 V3 MULTI SIGNAL SCANNER STARTED")
 
 while True:
 
     try:
 
-        coins = (
-            get_binance()
-            + get_kucoin()
-            + get_bybit()
-            + get_gateio()
-        )
+        coins = binance_scan()
 
-        print("CANDIDATES:", len(coins))
+        for c in coins:
 
-        for coin in coins:
+            sym = c["symbol"]
 
-            exchange = coin["exchange"]
+            uid = sym
 
-            symbol = coin["symbol"]
-
-            uid = f"{exchange}_{symbol}"
-
-            if uid in already_sent:
+            if uid in sent:
                 continue
 
-            result = analyze(exchange, symbol)
+            res = analyze(sym, c["pump"])
 
-            if not result:
+            if not res:
                 continue
 
-            score = result["score"]
+            score = res["score"]
 
-            if score < 70:
+            # =================================================
+            # GRADE SYSTEM
+            # =================================================
+
+            if score >= 85:
+                grade = "🟢 VERY GOOD"
+                prob = "HIGH"
+                color = "🟢"
+
+            elif score >= 70:
+                grade = "🟡 GOOD"
+                prob = "MEDIUM"
+                color = "🟡"
+
+            elif score >= 55:
+                grade = "🔴 MEDIUM"
+                prob = "LOW"
+                color = "🔴"
+
+            else:
                 continue
 
-            color = {
-                "BINANCE": "🟡",
-                "KUCOIN": "🟣",
-                "BYBIT": "🔵",
-                "GATEIO": "🟢"
-            }.get(exchange, "⚪")
-
-            probability = "MEDIUM"
-
-            if score >= 90:
-                probability = "EXTREME"
-
-            elif score >= 80:
-                probability = "HIGH"
-
-            message = f"""
-{color} <b>{exchange}</b>
+            msg = f"""
+{color} BINANCE — {grade}
 
 🔥 ELITE SHORT SIGNAL
 
-💰 <b>{symbol}</b>
+💰 {sym}
 
 🧠 AI SCORE:
-<b>{score}/100</b>
+{score}/100
 
 ━━━━━━━━━━━━━━
 
 📈 24H Pump:
-<b>{coin['pump']:.2f}%</b>
+{c['pump']:.2f}%
 
 ━━━━━━━━━━━━━━
 
-📊 RSI 5M:
-<b>{result['rsi5']:.2f}</b>
-
-📊 RSI 15M:
-<b>{result['rsi15']:.2f}</b>
-
-📊 RSI 1H:
-<b>{result['rsi1h']:.2f}</b>
-
-━━━━━━━━━━━━━━
-
-🕯 Upper Wick:
-<b>{result['wick']}</b>
-
-📉 Weak Volume:
-<b>{result['volume_weak']}</b>
-
-🔻 Bearish Pattern:
-<b>{result['bearish']}</b>
+📊 RSI:
+{res['rsi']:.2f}
 
 📏 EMA Stretch:
-<b>{result['stretch']:.2f}%</b>
+{res['stretch']:.2f}%
 
 ━━━━━━━━━━━━━━
 
 🎯 SHORT ENTRY:
-<b>{result['entry_low']}</b>
+{res['entry_low']:.6f}
 →
-<b>{result['entry_high']}</b>
+{res['entry_high']:.6f}
 
 📉 Expected Drop:
-<b>-{result['expected_drop']}%</b>
+-{res['drop']:.2f}%
 
 ⚠️ Reversal Probability:
-<b>{probability}</b>
+{prob}
 
 ━━━━━━━━━━━━━━
 
-💵 Position:
-<b>5$</b>
-
-⚡ Leverage:
-<b>2x Isolated</b>
-
-🕒 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+💵 Position: 5$
+⚡ Leverage: 2x
+🕒 {datetime.now()}
 """
 
-            print(message)
+            print(msg)
+            send(msg)
 
-            send_telegram(message)
-
-            already_sent.add(uid)
+            sent.add(uid)
 
     except Exception as e:
+        print("ERROR:", e)
 
-        print("MAIN ERROR:", e)
-
-    time.sleep(CHECK_INTERVAL)
+    time.sleep(INTERVAL)

@@ -1,7 +1,6 @@
 import time
 import requests
 import pandas as pd
-import numpy as np
 from datetime import datetime
 
 # =========================================================
@@ -17,47 +16,41 @@ CHAT_IDS = [
 
 INTERVAL = 180
 
-# صور المنصات (غيّرها حسب رغبتك)
-PLATFORM_IMAGES = {
-    "BINANCE": "https://i.imgur.com/your_binance_bg.jpg",
-    "BYBIT": "https://i.imgur.com/your_bybit_bg.jpg",
-    "KUCOIN": "https://i.imgur.com/your_kucoin_bg.jpg",
-    "GATEIO": "https://i.imgur.com/your_gate_bg.jpg"
+# خلفيات المنصات
+PLATFORM_BG = {
+    "BINANCE": "https://i.imgur.com/binance_bg.jpg",
+    "BYBIT": "https://i.imgur.com/bybit_bg.jpg",
+    "KUCOIN": "https://i.imgur.com/kucoin_bg.jpg",
+    "GATEIO": "https://i.imgur.com/gate_bg.jpg"
 }
 
 # =========================================================
 # TELEGRAM SEND PHOTO
 # =========================================================
 
-def send_photo(image_url, caption, chat_id):
+def send_photo(chat_id, image, caption):
 
     url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
 
-    try:
-        requests.post(
-            url,
-            data={
-                "chat_id": chat_id,
-                "photo": image_url,
-                "caption": caption,
-                "parse_mode": "HTML"
-            }
-        )
-    except Exception as e:
-        print("Telegram error:", e)
+    requests.post(url, data={
+        "chat_id": chat_id,
+        "photo": image,
+        "caption": caption,
+        "parse_mode": "HTML"
+    })
 
 # =========================================================
-# SEND ALERT TO ALL
+# SEND ALERT
 # =========================================================
 
-def send_alert(exchange, caption):
+def send(exchange, caption):
 
-    img = PLATFORM_IMAGES.get(exchange, None)
+    img = PLATFORM_BG.get(exchange)
 
     for chat in CHAT_IDS:
 
         if img:
-            send_photo(img, caption, chat)
+            send_photo(chat, img, caption)
         else:
             requests.post(
                 f"https://api.telegram.org/bot{TOKEN}/sendMessage",
@@ -99,7 +92,7 @@ def ema(series, period=20):
 
 def klines(symbol):
 
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit=200"
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit=120"
 
     data = requests.get(url).json()
 
@@ -109,13 +102,13 @@ def klines(symbol):
 
     df.columns = ["t","o","h","l","c","v"]
 
-    for col in ["o","h","l","c","v"]:
-        df[col] = pd.to_numeric(df[col])
+    for c in ["o","h","l","c","v"]:
+        df[c] = pd.to_numeric(df[c])
 
     return df
 
 # =========================================================
-# SCAN BINANCE
+# SCAN MARKET
 # =========================================================
 
 def scan():
@@ -124,7 +117,7 @@ def scan():
 
     data = requests.get(url).json()
 
-    out = []
+    coins = []
 
     for c in data:
 
@@ -140,7 +133,7 @@ def scan():
 
             if pump > 10 and vol > 200000:
 
-                out.append({
+                coins.append({
                     "symbol": sym,
                     "pump": pump,
                     "exchange": "BINANCE"
@@ -149,10 +142,10 @@ def scan():
         except:
             continue
 
-    return out
+    return coins
 
 # =========================================================
-# ANALYZE
+# ANALYSIS
 # =========================================================
 
 def analyze(symbol):
@@ -180,7 +173,6 @@ def analyze(symbol):
 
     return {
         "score": score,
-        "price": price,
         "rsi": r,
         "stretch": stretch
     }
@@ -191,7 +183,7 @@ def analyze(symbol):
 
 sent = set()
 
-print("V4 UI BOT STARTED")
+print("🚀 BOT STARTED")
 
 while True:
 
@@ -217,36 +209,39 @@ while True:
             if score >= 85:
                 grade = "🟢 VERY GOOD"
                 prob = "HIGH"
+                color = "🟢"
 
             elif score >= 70:
                 grade = "🟡 GOOD"
                 prob = "MEDIUM"
+                color = "🟡"
 
             elif score >= 55:
                 grade = "🔴 MEDIUM"
                 prob = "LOW"
+                color = "🔴"
 
             else:
                 continue
 
             # =================================================
-            # NEW UI CAPTION (PREMIUM)
+            # FINAL ALERT UI
             # =================================================
 
             caption = f"""
-<b>🔥 ELITE SHORT SIGNAL</b>
+🔥 <b>ELITE SHORT SIGNAL</b>
 
 💰 <b>{sym}</b>
 🧠 AI SCORE: <b>{score}/100</b>
-⚠️ {grade}
+{color} {grade}
 
 ━━━━━━━━━━━━━━
 📊 RSI: {res['rsi']:.2f}
 📏 EMA STRETCH: {res['stretch']:.2f}%
 
 ━━━━━━━━━━━━━━
-🎯 ENTRY ZONE:
-Market Analysis Active
+🎯 ENTRY:
+Market Zone Detected
 
 📉 EXPECTED DROP:
 Auto-calculated
@@ -260,7 +255,7 @@ Auto-calculated
 
             print(caption)
 
-            send_alert(c["exchange"], caption)
+            send(c["exchange"], caption)
 
             sent.add(sym)
 

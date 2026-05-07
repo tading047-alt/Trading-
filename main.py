@@ -3,27 +3,22 @@ import requests
 import pandas as pd
 from datetime import datetime
 
-# ==========================================
+# =====================================================
 # CONFIG
-# ==========================================
+# =====================================================
 
 TELEGRAM_BOT_TOKEN = "8628541851:AAGTo4LDtxv8WOy40L5YI7kqIdwv2SLNUKI"
 TELEGRAM_CHAT_ID = "5067771509"
 
 CHECK_INTERVAL = 180
 
-# شرط الارتفاع خلال 24 ساعة
 MIN_24H_PUMP = 50
-
-# RSI
 MIN_RSI = 80
-
-# أقل سيولة
 MIN_VOLUME_USDT = 500000
 
-# ==========================================
+# =====================================================
 # TELEGRAM
-# ==========================================
+# =====================================================
 
 def send_telegram(message):
 
@@ -41,9 +36,9 @@ def send_telegram(message):
     except Exception as e:
         print("Telegram Error:", e)
 
-# ==========================================
+# =====================================================
 # RSI
-# ==========================================
+# =====================================================
 
 def calculate_rsi(series, period=14):
 
@@ -63,11 +58,11 @@ def calculate_rsi(series, period=14):
 
     return rsi
 
-# ==========================================
-# GET KLINES
-# ==========================================
+# =====================================================
+# GET KLINES BINANCE
+# =====================================================
 
-def get_klines(symbol, interval="5m", limit=100):
+def get_binance_klines(symbol, interval="5m", limit=100):
 
     url = (
         f"https://api.binance.com/api/v3/klines"
@@ -78,20 +73,18 @@ def get_klines(symbol, interval="5m", limit=100):
 
     data = response.json()
 
-    df = pd.DataFrame(data, columns=[
+    df = pd.DataFrame(data)
+
+    df = df.iloc[:, :6]
+
+    df.columns = [
         "open_time",
         "open",
         "high",
         "low",
         "close",
-        "volume",
-        "close_time",
-        "qav",
-        "trades",
-        "tbav",
-        "tqav",
-        "ignore"
-    ])
+        "volume"
+    ]
 
     cols = ["open", "high", "low", "close", "volume"]
 
@@ -100,9 +93,52 @@ def get_klines(symbol, interval="5m", limit=100):
 
     return df
 
-# ==========================================
-# PRICE CHANGE
-# ==========================================
+# =====================================================
+# GET KLINES GATEIO
+# =====================================================
+
+def get_gateio_klines(symbol, interval="5m", limit=100):
+
+    gate_interval = {
+        "5m": "5m",
+        "15m": "15m",
+        "1h": "1h",
+        "4h": "4h",
+        "1d": "1d"
+    }
+
+    pair = symbol.replace("USDT", "_USDT")
+
+    url = (
+        f"https://api.gateio.ws/api/v4/spot/candlesticks"
+        f"?currency_pair={pair}"
+        f"&interval={gate_interval[interval]}"
+        f"&limit={limit}"
+    )
+
+    response = requests.get(url, timeout=20)
+
+    data = response.json()
+
+    rows = []
+
+    for row in data:
+
+        rows.append({
+            "open": float(row[5]),
+            "high": float(row[3]),
+            "low": float(row[4]),
+            "close": float(row[2]),
+            "volume": float(row[1])
+        })
+
+    df = pd.DataFrame(rows)
+
+    return df
+
+# =====================================================
+# CHANGE
+# =====================================================
 
 def calculate_change(df):
 
@@ -115,15 +151,17 @@ def calculate_change(df):
 
     return ((last - first) / first) * 100
 
-# ==========================================
-# LONG UPPER WICK
-# ==========================================
+# =====================================================
+# UPPER WICK
+# =====================================================
 
 def has_long_upper_wick(df):
 
     candle = df.iloc[-1]
 
-    body = abs(candle["close"] - candle["open"])
+    body = abs(
+        candle["close"] - candle["open"]
+    )
 
     upper_wick = candle["high"] - max(
         candle["open"],
@@ -133,13 +171,11 @@ def has_long_upper_wick(df):
     if body == 0:
         body = 0.0001
 
-    ratio = upper_wick / body
+    return (upper_wick / body) >= 2
 
-    return ratio >= 2
-
-# ==========================================
+# =====================================================
 # WEAK VOLUME
-# ==========================================
+# =====================================================
 
 def weak_volume(df):
 
@@ -149,11 +185,31 @@ def weak_volume(df):
 
     return recent < previous
 
-# ==========================================
-# GET 24H GAINERS
-# ==========================================
+# =====================================================
+# FILTER LEVERAGED TOKENS
+# =====================================================
 
-def get_candidates():
+def is_valid_symbol(symbol):
+
+    blocked_words = [
+        "3L",
+        "3S",
+        "5L",
+        "5S",
+        "BULL",
+        "BEAR"
+    ]
+
+    if any(word in symbol for word in blocked_words):
+        return False
+
+    return True
+
+# =====================================================
+# GET BINANCE CANDIDATES
+# =====================================================
+
+def get_binance_candidates():
 
     url = "https://api.binance.com/api/v3/ticker/24hr"
 
@@ -172,6 +228,9 @@ def get_candidates():
             if not symbol.endswith("USDT"):
                 continue
 
+            if not is_valid_symbol(symbol):
+                continue
+
             change_24h = float(
                 coin["priceChangePercent"]
             )
@@ -186,44 +245,94 @@ def get_candidates():
             ):
 
                 results.append({
+                    "exchange": "BINANCE",
                     "symbol": symbol,
-                    "change_24h": change_24h,
-                    "volume": volume
+                    "change_24h": change_24h
                 })
 
         except:
             pass
 
-    return sorted(
-        results,
-        key=lambda x: x["change_24h"],
-        reverse=True
-    )
+    return results
 
-# ==========================================
+# =====================================================
+# GET GATEIO CANDIDATES
+# =====================================================
+
+def get_gateio_candidates():
+
+    url = "https://api.gateio.ws/api/v4/spot/tickers"
+
+    response = requests.get(url, timeout=20)
+
+    data = response.json()
+
+    results = []
+
+    for coin in data:
+
+        try:
+
+            symbol = coin["currency_pair"]
+
+            if not symbol.endswith("_USDT"):
+                continue
+
+            clean_symbol = symbol.replace("_", "")
+
+            if not is_valid_symbol(clean_symbol):
+                continue
+
+            change_24h = float(
+                coin["change_percentage"]
+            )
+
+            volume = float(
+                coin["quote_volume"]
+            )
+
+            if (
+                change_24h >= MIN_24H_PUMP
+                and volume >= MIN_VOLUME_USDT
+            ):
+
+                results.append({
+                    "exchange": "GATEIO",
+                    "symbol": clean_symbol,
+                    "change_24h": change_24h
+                })
+
+        except:
+            pass
+
+    return results
+
+# =====================================================
 # ANALYZE
-# ==========================================
+# =====================================================
 
-def analyze(symbol):
+def analyze(symbol, exchange):
 
     try:
 
-        # 5m
+        if exchange == "BINANCE":
+            get_klines = get_binance_klines
+            color = "🟡"
+
+        else:
+            get_klines = get_gateio_klines
+            color = "🟢"
+
         df_5m = get_klines(symbol, "5m", 100)
 
-        # 15m
         df_15m = get_klines(symbol, "15m", 100)
 
-        # 1h
         df_1h = get_klines(symbol, "1h", 100)
 
-        # 4h
         df_4h = get_klines(symbol, "4h", 100)
 
-        # 1d
         df_1d = get_klines(symbol, "1d", 4)
 
-        # RSI
         df_5m["RSI"] = calculate_rsi(
             df_5m["close"]
         )
@@ -232,17 +341,14 @@ def analyze(symbol):
             df_5m["RSI"].iloc[-1]
         )
 
-        # WICK
-        wick_5m = has_long_upper_wick(df_5m)
+        wick = (
+            has_long_upper_wick(df_5m)
+            or
+            has_long_upper_wick(df_15m)
+        )
 
-        wick_15m = has_long_upper_wick(df_15m)
+        volume_weak = weak_volume(df_5m)
 
-        wick = wick_5m or wick_15m
-
-        # VOLUME
-        volume_is_weak = weak_volume(df_5m)
-
-        # CHANGES
         change_1h = calculate_change(
             df_1h.tail(2)
         )
@@ -258,17 +364,18 @@ def analyze(symbol):
         signal = (
             rsi >= MIN_RSI
             and wick
-            and volume_is_weak
+            and volume_weak
         )
 
         return {
             "signal": signal,
             "rsi": rsi,
             "wick": wick,
-            "weak_volume": volume_is_weak,
+            "weak_volume": volume_weak,
             "change_1h": change_1h,
             "change_4h": change_4h,
-            "change_3d": change_3d
+            "change_3d": change_3d,
+            "color": color
         }
 
     except Exception as e:
@@ -277,34 +384,42 @@ def analyze(symbol):
 
         return None
 
-# ==========================================
+# =====================================================
 # MAIN
-# ==========================================
+# =====================================================
 
 already_sent = set()
 
-print("BOT STARTED")
+print("MULTI EXCHANGE BOT STARTED")
 
 send_telegram(
-    "🚀 <b>Scalping Reversal Bot Started</b>"
+    "🚀 MULTI EXCHANGE SCALPING BOT STARTED"
 )
 
 while True:
 
     try:
 
-        candidates = get_candidates()
+        all_candidates = (
+            get_binance_candidates()
+            +
+            get_gateio_candidates()
+        )
 
-        print("Candidates:", len(candidates))
+        print("Candidates:", len(all_candidates))
 
-        for coin in candidates:
+        for coin in all_candidates:
+
+            exchange = coin["exchange"]
 
             symbol = coin["symbol"]
 
-            if symbol in already_sent:
+            unique_id = f"{exchange}_{symbol}"
+
+            if unique_id in already_sent:
                 continue
 
-            result = analyze(symbol)
+            result = analyze(symbol, exchange)
 
             if not result:
                 continue
@@ -312,6 +427,8 @@ while True:
             if result["signal"]:
 
                 message = f"""
+{result['color']} <b>{exchange}</b>
+
 🚨 <b>SHORT SIGNAL</b>
 
 💰 <b>{symbol}</b>
@@ -330,7 +447,7 @@ while True:
 
 ━━━━━━━━━━━━━━
 
-📊 RSI 5M:
+📊 RSI:
 <b>{result['rsi']:.2f}</b>
 
 🕯 Long Upper Wick:
@@ -342,7 +459,7 @@ while True:
 ━━━━━━━━━━━━━━
 
 💵 Entry: <b>5$</b>
-⚡ Leverage: <b>2x Isolated</b>
+⚡ Leverage: <b>2x</b>
 
 🎯 Target:
 <b>1$ Profit</b>
@@ -354,7 +471,7 @@ while True:
 
                 send_telegram(message)
 
-                already_sent.add(symbol)
+                already_sent.add(unique_id)
 
     except Exception as e:
 

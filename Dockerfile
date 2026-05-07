@@ -11,7 +11,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # نسخ كود البوت (افترضنا أن اسم ملف الكود هو bot.py)
-COPY bot.py .
+COPY main.py .
 
 # أمر تشغيل البوت
 CMD ["python", "main.py"]

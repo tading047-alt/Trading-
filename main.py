@@ -1,47 +1,68 @@
-import io
+import ccxt
 import pandas as pd
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
+import requests
+import time
 
-# الصلاحيات
-SCOPES = ["https://www.googleapis.com/auth/drive"]
+# --- إعدادات التلجرام الخاصة بك ---
+TELEGRAM_TOKEN = '8603477836:AAGG6Outg3Z9vBI-NjWQ3ALJroh_Cye3l2c'
+TELEGRAM_CHAT_ID = '6018153093'
 
-creds = Credentials.from_service_account_file(
-    "credentials.json",
-    scopes=SCOPES
-)
+def send_telegram_msg(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
+    try:
+        requests.post(url, json=payload)
+    except:
+        print("خطأ في إرسال التلجرام")
 
-service = build("drive", "v3", credentials=creds)
+# دالة حساب RSI يدوياً
+def calculate_rsi(prices, period=14):
+    delta = prices.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
-# 📊 بيانات تجريبية
-data = {
-    "coin": ["BTC", "ETH", "SOL"],
-    "price": [65000, 3200, 150]
-}
+# إعداد المنصات
+exchanges = {'Binance': ccxt.binance(), 'Gateio': ccxt.gateio()}
 
-df = pd.DataFrame(data)
+def get_market_data(ex_obj, symbol):
+    try:
+        bars = ex_obj.fetch_ohlcv(symbol, timeframe='5m', limit=50)
+        df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
+        rsi_series = calculate_rsi(df['close'])
+        return rsi_series.iloc[-1]
+    except:
+        return None
 
-# 📁 تحويل Excel في الذاكرة
-file_buffer = io.BytesIO()
-df.to_excel(file_buffer, index=False)
-file_buffer.seek(0)
+def scan_market():
+    for name, ex in exchanges.items():
+        print(f"🔍 فحص منصة {name}...")
+        try:
+            tickers = ex.fetch_tickers()
+            for symbol, ticker in tickers.items():
+                if '/USDT' in symbol or ':USDT' in symbol:
+                    change = ticker.get('percentage', 0)
+                    # الشرط: ارتفاع +50%
+                    if change >= 50:
+                        rsi_val = get_market_data(ex, symbol)
+                        # الشرط: RSI +80
+                        if rsi_val and rsi_val >= 80:
+                            last_price = ticker.get('last', 0)
+                            msg = (
+                                f"🚨 *فرصة شورت مؤكدة (بدون TA)*\n\n"
+                                f"🏛 المنصة: `{name}`\n"
+                                f"💰 العملة: `{symbol}`\n"
+                                f"📈 الارتفاع: `{change:.2f}%`\n"
+                                f"🔥 RSI (5m): `{rsi_val:.2f}`\n"
+                                f"💵 السعر: `{last_price}`"
+                            )
+                            send_telegram_msg(msg)
+                            time.sleep(1)
+        except Exception as e:
+            print(f"Error in {name}: {e}")
 
-# 📌 رفع الملف إلى Google Drive
-file_metadata = {
-    "name": "trading_data.xlsx",
-    "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-}
-
-media = MediaIoBaseUpload(
-    file_buffer,
-    mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
-
-file = service.files().create(
-    body=file_metadata,
-    media_body=media,
-    fields="id"
-).execute()
-
-print("FILE CREATED ✅ ID:", file.get("id"))
+print("🚀 الرادار (النسخة الخفيفة) يعمل...")
+while True:
+    scan_market()
+    time.sleep(180)

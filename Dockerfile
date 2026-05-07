@@ -1,10 +1,17 @@
-FROM python:3.11
+# استخدام نسخة خفيفة من بايثون
+FROM python:3.9-slim
 
+# ضبط مجلد العمل داخل الحاوية
 WORKDIR /app
 
+# نسخ ملف المكتبات أولاً (للاستفادة من الـ Caching)
 COPY requirements.txt .
-RUN pip install -r requirements.txt
 
-COPY . .
+# تثبيت المكتبات
+RUN pip install --no-cache-dir -r requirements.txt
 
-CMD ["python", "main.py"]
+# نسخ كود البوت (افترضنا أن اسم ملف الكود هو bot.py)
+COPY bot.py .
+
+# أمر تشغيل البوت
+CMD ["python", "bot.py"]

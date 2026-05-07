@@ -1,231 +1,167 @@
+# main.py - النسخة النهائية التي تعمل
 import requests
-import asyncio
-from telegram import Bot
-from datetime import datetime
-import logging
 import time
+from datetime import datetime
 
-# ======================== الإعدادات ========================
-TELEGRAM_BOT_TOKEN = "8628541851:AAGTo4LDtxv8WOy40L5YI7kqIdwv2SLNUKI"
+# ======================== إعدادات Telegram ========================
+# ⚠️ استخدم التوكن الجديد الذي حصلت عليه من @BotFather بعد إبطال القديم
+TELEGRAM_TOKEN = "8628541851:AAGTo4LDtxv8WOy40L5YI7kqIdwv2SLNUKI"
 TELEGRAM_CHAT_ID = "5067771509"
 
-# إعدادات التسجيل
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# ======================== دوال Telegram ========================
 
-# ======================== دوال API الخاصة بـ Gate.io ========================
-
-def get_all_tickers():
-    """
-    جلب بيانات جميع العملات من Gate.io
-    باستخدام API 2.0 (يقوم بإرجاع جميع العملات مرة واحدة)
-    المصدر: توثيق API الرسمي لـ Gate.io
-    """
+def send_telegram_message(text):
+    """إرسال رسالة إلى Telegram"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML"
+    }
+    
     try:
-        # استخدام API 2.0 لجلب جميع التيكرات مرة واحدة
+        response = requests.post(url, json=payload, timeout=10)
+        result = response.json()
+        
+        if result.get("ok"):
+            print(f"✅ {datetime.now().strftime('%H:%M:%S')} - تم الإرسال")
+            return True
+        else:
+            print(f"❌ فشل: {result}")
+            return False
+    except Exception as e:
+        print(f"❌ خطأ: {e}")
+        return False
+
+# ======================== دوال Gate.io ========================
+
+def get_gateio_tickers():
+    """جلب جميع العملات من Gate.io"""
+    try:
         url = "https://data.gateapi.io/api2/1/tickers"
         response = requests.get(url, timeout=30)
         
         if response.status_code == 200:
-            data = response.json()
-            logger.info(f"✅ تم جلب بيانات {len(data)} عملة من Gate.io")
-            return data
+            return response.json()
         else:
-            logger.error(f"❌ فشل الجلب: {response.status_code}")
+            print(f"⚠️ خطأ API: {response.status_code}")
             return None
-            
     except Exception as e:
-        logger.error(f"❌ خطأ في الاتصال بـ Gate.io: {e}")
+        print(f"⚠️ خطأ في الاتصال: {e}")
         return None
 
-def get_all_tickers_v4():
-    """
-    طريقة بديلة باستخدام API v4
-    المصدر: وثائق Gate.io API v4
-    """
-    try:
-        url = "https://api.gateio.ws/api/v4/spot/tickers"
-        response = requests.get(url, timeout=30)
-        
-        if response.status_code == 200:
-            data = response.json()
-            
-            # تحويل البيانات إلى نفس تنسيق API 2.0 للتوحيد
-            formatted_data = {}
-            for ticker in data:
-                currency_pair = ticker.get('currency_pair', '')
-                # تحويل BTC_USDT إلى btc_usdt
-                pair_key = currency_pair.lower().replace('_', '_')
-                
-                formatted_data[pair_key] = {
-                    'last': ticker.get('last', 0),
-                    'percentChange': float(ticker.get('change_percentage', 0)),
-                    'high24hr': ticker.get('high_24h', 0),
-                    'low24hr': ticker.get('low_24h', 0),
-                    'baseVolume': ticker.get('base_volume', 0),
-                    'quoteVolume': ticker.get('quote_volume', 0)
-                }
-            
-            logger.info(f"✅ (v4) تم جلب بيانات {len(formatted_data)} عملة")
-            return formatted_data
-            
-    except Exception as e:
-        logger.error(f"❌ خطأ في API v4: {e}")
-        return None
-
-def filter_high_gainers(tickers_data, min_gain=100):
-    """
-    فلترة العملات التي حققت ارتفاع أكثر من min_gain%
+def find_high_gainers(tickers, min_gain=100):
+    """البحث عن العملات المرتفعة أكثر من min_gain%"""
+    gainers = []
     
-    Args:
-        tickers_data: قاموس بيانات العملات
-        min_gain: الحد الأدنى لنسبة الارتفاع (افتراضي 100%)
+    if not tickers:
+        return gainers
     
-    Returns:
-        قائمة بالعملات التي تحقق الشرط
-    """
-    high_gainers = []
-    
-    if not tickers_data:
-        return high_gainers
-    
-    for symbol, data in tickers_data.items():
+    for symbol, data in tickers.items():
         try:
-            # استخراج نسبة التغير
+            # تخطي العملات التي لا تحتوي على USDT
+            if not symbol.endswith('_usdt'):
+                continue
+            
             percent_change = float(data.get('percentChange', 0))
             
-            # التحقق من أن العملة مرتفعة أكثر من min_gain%
             if percent_change > min_gain:
-                high_gainers.append({
-                    'symbol': symbol.upper(),
-                    'percent_change': percent_change,
-                    'last_price': data.get('last', 0),
-                    'high_24h': data.get('high24hr', 0),
-                    'low_24h': data.get('low24hr', 0),
-                    'volume': data.get('baseVolume', 0)
+                gainers.append({
+                    'symbol': symbol.upper().replace('_USDT', ''),
+                    'percent': percent_change,
+                    'price': float(data.get('last', 0)),
+                    'high': float(data.get('high24hr', 0)),
+                    'low': float(data.get('low24hr', 0)),
+                    'volume': float(data.get('baseVolume', 0))
                 })
-                
         except Exception as e:
-            logger.warning(f"خطأ في معالجة {symbol}: {e}")
             continue
     
-    # ترتيب حسب أعلى نسبة ارتفاع
-    high_gainers.sort(key=lambda x: x['percent_change'], reverse=True)
-    
-    return high_gainers
+    # ترتيب تنازلي حسب النسبة
+    gainers.sort(key=lambda x: x['percent'], reverse=True)
+    return gainers
 
-def format_alert_message(gainers_list):
-    """
-    تنسيق رسالة التنبيه للإرسال إلى Telegram
-    """
-    if not gainers_list:
-        return None
-    
-    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    
-    message = f"""
-🚀 <b>تنبيه! عملات مرتفعة أكثر من 100% على Gate.io</b>
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📅 الوقت: {current_time}
-📊 عدد العملات: {len(gainers_list)}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ======================== الدالة الرئيسية ========================
 
-"""
-    
-    for i, coin in enumerate(gainers_list[:15], 1):  # عرض أول 15 عملة فقط
-        message += f"""
-<b>{i}. {coin['symbol']}</b>
-📈 الارتفاع: <b>+{coin['percent_change']:.2f}%</b>
-💰 السعر الحالي: {coin['last_price']:.8f} USDT
-📊 أعلى سعر 24h: {coin['high_24h']:.8f}
-📉 أدنى سعر 24h: {coin['low_24h']:.8f}
-"""
-        
-        if coin['volume']:
-            message += f"💵 الحجم: {float(coin['volume']):.2f}\n"
-        
-        message += "─────────────────\n"
-    
-    message += f"\n✅ تم التحديث: {current_time}"
-    
-    return message
-
-async def send_telegram_message(bot, message):
-    """إرسال رسالة إلى Telegram"""
-    try:
-        if message:
-            await bot.send_message(
-                chat_id=TELEGRAM_CHAT_ID,
-                text=message,
-                parse_mode='HTML'
-            )
-            logger.info("✅ تم إرسال الرسالة إلى Telegram")
-            return True
-    except Exception as e:
-        logger.error(f"❌ فشل إرسال رسالة Telegram: {e}")
-        return False
-
-async def main():
-    """الدالة الرئيسية"""
+def main():
     print("=" * 50)
-    print("🚀 تشغيل بوت مراقبة عملات Gate.io")
-    print("📊 البحث عن عملات ارتفعت أكثر من 100%")
+    print("🚀 بوت مراقبة Gate.io - العملات المرتفعة أكثر من 100%")
     print("=" * 50)
     
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    # اختبار الاتصال بـ Telegram أولاً
+    print("\n📡 اختبار الاتصال بـ Telegram...")
+    if not send_telegram_message("🤖 <b>البوت يعمل الآن!</b>\n✅ جاري مراقبة Gate.io..."):
+        print("❌ فشل الاتصال بـ Telegram! تأكد من التوكن ورقم الدردشة")
+        return
     
-    # إرسال رسالة بدء التشغيل
-    await send_telegram_message(
-        bot,
-        "🤖 <b>تم تشغيل بوت مراقبة Gate.io</b>\n"
-        f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        "🔍 جاري البحث عن عملات ارتفعت أكثر من 100%..."
-    )
+    print("✅ الاتصال بـ Telegram ناجح")
+    print("🔍 بدء مراقبة Gate.io...\n")
     
     while True:
         try:
+            now = datetime.now()
+            print(f"\n{'='*40}")
+            print(f"🔄 {now.strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"{'='*40}")
+            
             # جلب البيانات
-            logger.info("🔄 جلب بيانات الأسواق من Gate.io...")
-            
-            # المحاولة باستخدام API 2.0
-            tickers = get_all_tickers()
-            
-            # إذا فشل API 2.0، جرب API v4
-            if not tickers:
-                logger.info("محاولة استخدام API v4...")
-                tickers = get_all_tickers_v4()
+            print("📡 جلب بيانات Gate.io...")
+            tickers = get_gateio_tickers()
             
             if tickers:
-                # فلترة العملات المرتفعة
-                high_gainers = filter_high_gainers(tickers, min_gain=100)
+                print(f"✅ تم جلب بيانات {len(tickers)} عملة")
                 
-                if high_gainers:
-                    logger.info(f"🎯 تم العثور على {len(high_gainers)} عملة مرتفعة أكثر من 100%")
+                # البحث عن العملات المرتفعة
+                gainers = find_high_gainers(tickers, min_gain=100)
+                
+                if gainers:
+                    print(f"\n🎯 تم العثور على {len(gainers)} عملة مرتفعة أكثر من 100%!")
                     
                     # عرض في الطرفية
-                    for coin in high_gainers[:10]:
-                        logger.info(f"  📈 {coin['symbol']}: +{coin['percent_change']:.2f}%")
+                    for coin in gainers[:10]:
+                        print(f"   📈 {coin['symbol']}: +{coin['percent']:.2f}%")
                     
-                    # إرسال التنبيه إلى Telegram
-                    message = format_alert_message(high_gainers)
-                    await send_telegram_message(bot, message)
+                    # بناء رسالة Telegram
+                    message = f"""
+🚀 <b>عملات مرتفعة أكثر من 100% على Gate.io</b>
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📅 {now.strftime('%Y-%m-%d %H:%M:%S')}
+📊 عدد العملات: {len(gainers)}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+                    
+                    for i, coin in enumerate(gainers[:15], 1):
+                        message += f"""
+<b>{i}. {coin['symbol']}</b>
+📈 <b>+{coin['percent']:.2f}%</b>
+💰 {coin['price']:.8f} USDT
+📊 أعلى: {coin['high']:.8f}
+📉 أدنى: {coin['low']:.8f}
+─────────────────
+"""
+                    
+                    message += f"\n✅ آخر تحديث: {now.strftime('%H:%M:%S')}"
+                    
+                    # إرسال إلى Telegram
+                    send_telegram_message(message)
                 else:
-                    logger.info("ℹ️ لم يتم العثور على عملات مرتفعة أكثر من 100%")
+                    print("ℹ️ لا توجد عملات مرتفعة أكثر من 100% حالياً")
+                    send_telegram_message(f"📊 <b>تحديث Gate.io</b>\n{now.strftime('%H:%M:%S')}\nℹ️ لا توجد عملات مرتفعة أكثر من 100%")
+            else:
+                print("❌ فشل جلب البيانات من Gate.io")
             
-            # انتظار 5 دقائق قبل التحديث التالي
-            logger.info("⏰ انتظار 5 دقائق قبل التحديث التالي...")
-            await asyncio.sleep(300)  # 5 دقائق
+            # انتظار 5 دقائق
+            print("\n⏰ انتظار 5 دقائق...")
+            time.sleep(300)
             
+        except KeyboardInterrupt:
+            print("\n⏹️ تم إيقاف البوت")
+            send_telegram_message("⏹️ <b>تم إيقاف بوت المراقبة</b>")
+            break
         except Exception as e:
-            logger.error(f"❌ خطأ في الحلقة الرئيسية: {e}")
-            await asyncio.sleep(60)  # انتظر دقيقة ثم حاول مجدداً
+            print(f"❌ خطأ غير متوقع: {e}")
+            time.sleep(60)
 
 # ======================== التشغيل ========================
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("⏹️ تم إيقاف البوت بواسطة المستخدم")
+    main()

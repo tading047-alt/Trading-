@@ -650,6 +650,7 @@ def scan_short_opportunities():
         return []
 
     opportunities = []
+    print("SHORT SCAN START")
 
     for c in data:
         try:
@@ -753,7 +754,9 @@ def scan_short_opportunities():
                 'atr_percent': atr_data['atr_percent']
             })
 
-        except Exception:
+        
+        except Exception as e:
+              print("SHORT ERROR:", e)
             continue
 
     opportunities.sort(key=lambda x: x['score'], reverse=True)

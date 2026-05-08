@@ -1,4 +1,4 @@
-# =========================================================
+خ# =========================================================
 # PROFESSIONAL AI BINANCE SCANNER
 # MAIN.PY
 # =========================================================
@@ -641,96 +641,73 @@ def scan_long_opportunities(limit=200):
 # =========================================================
 # SHORT SCANNER
 # =========================================================
-
 def scan_short_opportunities():
-
     url = "https://api.binance.com/api/v3/ticker/24hr"
 
     try:
-        data = requests.get(url).json()
+        data = requests.get(url, timeout=10).json()
     except:
         return []
 
     opportunities = []
 
     for c in data:
-
         try:
-
-            sym = c['symbol']
+            sym = c["symbol"]
 
             if not sym.endswith("USDT"):
                 continue
 
-            pump = float(
-                c['priceChangePercent']
-            )
+            pump = float(c["priceChangePercent"])
+            vol = float(c["quoteVolume"])
 
-            volume = float(
-                c['quoteVolume']
-            )
-
-            if volume < MIN_VOLUME_USDT:
+            if vol < MIN_VOLUME_USDT:
                 continue
 
             if pump < MIN_PUMP:
                 continue
 
-            df = klines(
-                sym,
-                '5m',
-                120
-            )
+            df = klines(sym, '5m', 120)
 
-            if df is None:
+            if df is None or len(df) < 30:
                 continue
 
-            df['rsi'] = rsi(df['c'])
+            df["rsi"] = rsi(df["c"])
+            current_rsi = df["rsi"].iloc[-1]
 
-            current_rsi = df['rsi'].iloc[-1]
+            ema20 = ema(df["c"], 20).iloc[-1]
+            current_price = df["c"].iloc[-1]
 
-            ema20 = ema(
-                df['c'],
-                20
-            ).iloc[-1]
+            stretch = ((current_price - ema20) / ema20) * 100
 
-            current_price = df['c'].iloc[-1]
-
-            stretch = (
-                (
-                    current_price - ema20
-                ) / ema20
-            ) * 100
-
-            macd_line, signal_line, hist = macd(df['c'])
+            macd_line, signal_line, hist = macd(df["c"])
 
             atr_data = calculate_atr(df)
 
-            if not atr_data['is_good']:
+            if atr_data["atr_percent"] < 0.8 or atr_data["atr_percent"] > 10:
                 continue
 
             score = 0
 
             if current_rsi > 70:
                 score += 15
-
             if current_rsi > 80:
                 score += 10
 
-            if stretch > 5:
+            if stretch > 4:
                 score += 10
 
             if wick(df):
-                score += 15
+                score += 10
 
             if volume_weak(df):
                 score += 10
 
-            if bearish(df):
-                score += 15
+            if bearish(df) or df["c"].iloc[-1] < df["c"].iloc[-2]:
+                score += 12
 
-            if hist.iloc[-1] < 0:
-                score += 10
+            if hist.iloc[-1] < hist.iloc[-2]:
+                score += 8
 
             if score < MIN_SCORE_SHORT:
                 continue
@@ -749,8 +726,9 @@ def scan_short_opportunities():
                 stop_loss
             )
 
-            opportunities.append({
+            print(f"[SHORT] {sym} | SCORE={score} | RSI={current_rsi:.1f} | PUMP={pump:.2f}%")
 
+            opportunities.append({
                 'symbol': sym,
                 'score': score,
                 'current_price': current_price,
@@ -759,16 +737,12 @@ def scan_short_opportunities():
                 'drop': expected_drop,
                 'position_size': position_size,
                 'atr_percent': atr_data['atr_percent']
-
             })
 
         except:
             continue
 
-    opportunities.sort(
-        key=lambda x: x['score'],
-        reverse=True
-    )
+    opportunities.sort(key=lambda x: x['score'], reverse=True)
 
     return opportunities
 

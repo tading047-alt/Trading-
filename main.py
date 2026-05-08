@@ -661,16 +661,18 @@ def scan_short_opportunities():
             pump = float(c["priceChangePercent"])
             vol = float(c["quoteVolume"])
 
+            # 🔧 relaxed volume filter
             if vol < MIN_VOLUME_USDT:
                 continue
 
-            if pump < MIN_PUMP:
+            df = klines(sym, '5m', 100)
+
+            if df is None or len(df) < 40:
                 continue
 
-            df = klines(sym, '5m', 120)
-
-            if df is None or len(df) < 30:
-                continue
+            # =========================
+            # indicators
+            # =========================
 
             df["rsi"] = rsi(df["c"])
             current_rsi = df["rsi"].iloc[-1]
@@ -684,32 +686,44 @@ def scan_short_opportunities():
 
             atr_data = calculate_atr(df)
 
-            if atr_data["atr_percent"] < 0.8 or atr_data["atr_percent"] > 10:
+            # 🔧 ATR FIX (less strict)
+            if atr_data["atr_percent"] <= 0 or atr_data["atr_percent"] > 12:
                 continue
 
             score = 0
 
+            # RSI pressure
             if current_rsi > 70:
                 score += 15
             if current_rsi > 80:
                 score += 10
 
-            if stretch > 4:
+            # overextension
+            if stretch > 3:
                 score += 10
 
+            # wick / rejection
             if wick(df):
                 score += 10
 
+            # volume weakness
             if volume_weak(df):
                 score += 10
 
+            # bearish pressure
             if bearish(df) or df["c"].iloc[-1] < df["c"].iloc[-2]:
                 score += 12
 
+            # momentum weakening
             if hist.iloc[-1] < hist.iloc[-2]:
                 score += 8
 
-            if score < MIN_SCORE_SHORT:
+            # 🔧 IMPORTANT FIX: remove strict pump block
+            if pump > 0:
+                score += 5  # pump is optional signal now
+
+            # FINAL FILTER (softened)
+            if score < 45:   # 🔧 lower than before
                 continue
 
             entry_low = current_price * 1.01
@@ -726,7 +740,7 @@ def scan_short_opportunities():
                 stop_loss
             )
 
-            print(f"[SHORT] {sym} | SCORE={score} | RSI={current_rsi:.1f} | PUMP={pump:.2f}%")
+            print(f"[SHORT] {sym} | SCORE={score} | RSI={current_rsi:.1f}")
 
             opportunities.append({
                 'symbol': sym,
@@ -739,12 +753,13 @@ def scan_short_opportunities():
                 'atr_percent': atr_data['atr_percent']
             })
 
-        except:
+        except Exception:
             continue
 
     opportunities.sort(key=lambda x: x['score'], reverse=True)
 
     return opportunities
+        
 
 
     

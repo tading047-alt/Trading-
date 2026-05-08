@@ -31,7 +31,7 @@ MIN_SCORE_SHORT = 50
 MIN_SCORE_LONG = 24
 
 # FILTERS
-MIN_VOLUME_USDT = 1000000
+MIN_VOLUME_USDT = 200000
 
 MIN_ATR_PERCENT = 1.2
 MAX_ATR_PERCENT = 3.0
@@ -756,8 +756,8 @@ def scan_short_opportunities():
 
         
         except Exception as e:
-              print("SHORT ERROR:", e)
-            continue
+               print("SHORT ERROR:", e)
+               continue
 
     opportunities.sort(key=lambda x: x['score'], reverse=True)
 

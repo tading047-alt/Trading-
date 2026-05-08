@@ -28,6 +28,22 @@ MAX_LEVERAGE = 2
 MAX_COINS_TO_SCAN = 200
 
 # =========================================================
+# إعدادات فلترة الإشارات (الجديدة)
+# =========================================================
+
+MIN_SCORE_SHORT = 70      # أقل درجة للإشارة SHORT (كان 55)
+MIN_SCORE_LONG = 70       # أقل درجة للإشارة LONG (كان 15)
+MIN_VOLUME_USDT = 1000000 # أقل حجم تداول (1 مليون دولار)
+REQUIRE_GOLDEN_CROSS = True  # هل نطلب Golden Cross إجباري؟
+
+# =========================================================
+# إعدادات ATR (معدل التحرك الحقيقي)
+# =========================================================
+
+MIN_ATR_PERCENT = 1.5     # أقل نسبة تحرك مطلوبة
+MAX_ATR_PERCENT = 4.0     # أعلى نسبة تحرك مقبولة
+
+# =========================================================
 # TELEGRAM
 # =========================================================
 
@@ -135,6 +151,34 @@ def bearish(df):
         and curr["o"] > prev["c"]
     )
 
+def calculate_atr(df, period=14):
+    """حساب ATR ونسبة التحرك"""
+    try:
+        high = df['h']
+        low = df['l']
+        close = df['c']
+        
+        tr1 = high - low
+        tr2 = abs(high - close.shift())
+        tr3 = abs(low - close.shift())
+        
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(period).mean()
+        
+        current_price = close.iloc[-1]
+        if current_price > 0:
+            atr_percent = (atr.iloc[-1] / current_price) * 100
+        else:
+            atr_percent = 0
+            
+        return {
+            'atr': atr.iloc[-1],
+            'atr_percent': atr_percent,
+            'is_good': MIN_ATR_PERCENT <= atr_percent <= MAX_ATR_PERCENT
+        }
+    except:
+        return {'atr': 0, 'atr_percent': 0, 'is_good': False}
+
 # =========================================================
 # BINANCE DATA
 # =========================================================
@@ -220,10 +264,17 @@ def scan_short_opportunities():
             pump = float(c["priceChangePercent"])
             vol = float(c["quoteVolume"])
             
-            if pump > MIN_PUMP and vol > MIN_VOLUME:
+            # شرط إضافي: حجم التداول
+            if vol < MIN_VOLUME_USDT:
+                continue
+            
+            if pump > MIN_PUMP:
                 df = klines(sym, '5m', 60)
                 if df is None or len(df) < 30:
                     continue
+                
+                # حساب ATR
+                atr_data = calculate_atr(df)
                 
                 df["rsi"] = rsi(df["c"])
                 df["ema"] = ema(df["c"])
@@ -247,37 +298,44 @@ def scan_short_opportunities():
                 if bearish(df):
                     score += 20
                 
-                if score >= 55:
-                    # حساب RSI على فريمات مختلفة
-                    rsi_5m = current_rsi
-                    rsi_15m = df["rsi"].iloc[-3] if len(df) >= 3 else current_rsi
-                    rsi_1h = df["rsi"].iloc[-12] if len(df) >= 12 else current_rsi
-                    
-                    # حساب التغيرات
-                    change_4h = ((df["c"].iloc[-1] / df["c"].iloc[-48]) - 1) * 100 if len(df) >= 48 else pump * 0.3
-                    change_1h = ((df["c"].iloc[-1] / df["c"].iloc[-12]) - 1) * 100 if len(df) >= 12 else pump * 0.1
-                    
-                    entry_low = current_price * 1.01
-                    entry_high = current_price * 1.03
-                    expected_drop = abs(stretch * 0.7)
-                    
-                    opportunities.append({
-                        'symbol': sym,
-                        'pump': pump,
-                        'score': score,
-                        'current_price': current_price,
-                        'rsi': current_rsi,
-                        'stretch': stretch,
-                        'rsi_5m': rsi_5m,
-                        'rsi_15m': rsi_15m,
-                        'rsi_1h': rsi_1h,
-                        'change_24h': pump,
-                        'change_4h': change_4h,
-                        'change_1h': change_1h,
-                        'entry_low': entry_low,
-                        'entry_high': entry_high,
-                        'drop': expected_drop
-                    })
+                # فلتر ATR - الإشارة تحتاج ATR جيد
+                if not atr_data['is_good']:
+                    continue
+                
+                # فلتر النتيجة
+                if score < MIN_SCORE_SHORT:
+                    continue
+                
+                # حساب باقي البيانات
+                rsi_5m = current_rsi
+                rsi_15m = df["rsi"].iloc[-3] if len(df) >= 3 else current_rsi
+                rsi_1h = df["rsi"].iloc[-12] if len(df) >= 12 else current_rsi
+                
+                change_4h = ((df["c"].iloc[-1] / df["c"].iloc[-48]) - 1) * 100 if len(df) >= 48 else pump * 0.3
+                change_1h = ((df["c"].iloc[-1] / df["c"].iloc[-12]) - 1) * 100 if len(df) >= 12 else pump * 0.1
+                
+                entry_low = current_price * 1.01
+                entry_high = current_price * 1.03
+                expected_drop = abs(stretch * 0.7)
+                
+                opportunities.append({
+                    'symbol': sym,
+                    'pump': pump,
+                    'score': score,
+                    'current_price': current_price,
+                    'rsi': current_rsi,
+                    'stretch': stretch,
+                    'rsi_5m': rsi_5m,
+                    'rsi_15m': rsi_15m,
+                    'rsi_1h': rsi_1h,
+                    'change_24h': pump,
+                    'change_4h': change_4h,
+                    'change_1h': change_1h,
+                    'entry_low': entry_low,
+                    'entry_high': entry_high,
+                    'drop': expected_drop,
+                    'atr_percent': atr_data['atr_percent']
+                })
         except Exception as e:
             continue
     
@@ -308,6 +366,9 @@ def scan_long_opportunities(limit=MAX_COINS_TO_SCAN):
         for tf, df in dataframes.items():
             if df is None or len(df) < 50:
                 continue
+            
+            # حساب ATR
+            atr_data = calculate_atr(df)
             
             current_price = df['c'].iloc[-1]
             df['rsi'] = rsi(df['c'])
@@ -342,35 +403,53 @@ def scan_long_opportunities(limit=MAX_COINS_TO_SCAN):
                 'candle_pattern': candle_pattern,
                 'current_price': current_price,
                 'upper_band': upper.iloc[-1],
-                'middle_band': middle.iloc[-1]
+                'middle_band': middle.iloc[-1],
+                'atr_percent': atr_data['atr_percent']
             }
         
-        if analyses and total_score >= MIN_BULLISH_SCORE:
-            main_tf = analyses.get('4h') or analyses.get('1h') or analyses.get('15m')
-            current_price = main_tf['current_price']
-            
-            entry_low = round(current_price * 0.99, 4)
-            entry_high = round(current_price, 4)
-            expected_gain = round((main_tf['upper_band'] - current_price) / current_price * 100, 2)
-            if expected_gain < 2:
-                expected_gain = 3.0
-            
-            stop_loss = round(current_price * 0.97, 4)
-            take_profit_1 = round(current_price * 1.03, 4)
-            take_profit_2 = round(current_price * 1.06, 4)
-            
-            opportunities.append({
-                'symbol': sym,
-                'score': total_score,
-                'current_price': current_price,
-                'entry_low': entry_low,
-                'entry_high': entry_high,
-                'expected_gain': expected_gain,
-                'stop_loss': stop_loss,
-                'take_profit_1': take_profit_1,
-                'take_profit_2': take_profit_2,
-                'analyses': analyses
-            })
+        if not analyses:
+            continue
+        
+        # فلتر ATR - نأخذ أفضل ATR من الفريمات
+        best_atr = max([analyses[tf]['atr_percent'] for tf in analyses if analyses[tf]['atr_percent'] > 0], default=0)
+        if best_atr < MIN_ATR_PERCENT or best_atr > MAX_ATR_PERCENT:
+            continue
+        
+        # فلتر النتيجة
+        if total_score < MIN_SCORE_LONG:
+            continue
+        
+        # شرط Golden Cross إجباري
+        main_tf_4h = analyses.get('4h', {})
+        if REQUIRE_GOLDEN_CROSS and not main_tf_4h.get('golden_cross', False):
+            continue
+        
+        main_tf = analyses.get('4h') or analyses.get('1h') or analyses.get('15m')
+        current_price = main_tf['current_price']
+        
+        entry_low = round(current_price * 0.99, 4)
+        entry_high = round(current_price, 4)
+        expected_gain = round((main_tf['upper_band'] - current_price) / current_price * 100, 2)
+        if expected_gain < 2:
+            expected_gain = 3.0
+        
+        stop_loss = round(current_price * 0.97, 4)
+        take_profit_1 = round(current_price * 1.03, 4)
+        take_profit_2 = round(current_price * 1.06, 4)
+        
+        opportunities.append({
+            'symbol': sym,
+            'score': total_score,
+            'current_price': current_price,
+            'entry_low': entry_low,
+            'entry_high': entry_high,
+            'expected_gain': expected_gain,
+            'stop_loss': stop_loss,
+            'take_profit_1': take_profit_1,
+            'take_profit_2': take_profit_2,
+            'analyses': analyses,
+            'atr_percent': best_atr
+        })
         
         time.sleep(0.3)
     
@@ -433,6 +512,9 @@ def format_short_message(opp):
 
 📏 EMA DISTANCE:
 {opp['stretch']:.2f}%
+
+📊 ATR (Avg True Range):
+{opp['atr_percent']:.2f}% ✅
 
 ━━━━━━━━━━━━━━━━━━
 🎯 TRADE SETUP
@@ -516,6 +598,7 @@ def format_long_message(opp):
 
 <b>📊 BOLLINGER BANDS:</b>
 • Position: {bb_4h['bb_signal']}
+• ATR %: {opp['atr_percent']:.2f}% ✅
 
 <b>🕯️ CANDLE PATTERNS:</b>
 • {candle_4h['candle_pattern']}
@@ -578,7 +661,12 @@ sent_long = set()
 print("🚀 DUAL SIGNAL SCANNER STARTED (SHORT + LONG)")
 print(f"📊 Will scan up to {MAX_COINS_TO_SCAN} coins for LONG opportunities")
 print("📊 Will scan ALL coins for SHORT opportunities")
-send("🚀 <b>DUAL SIGNAL SCANNER STARTED</b>\n\n📉 SHORT: High pump coins with bearish patterns\n📈 LONG: Golden cross + RSI bullish + Bollinger")
+print(f"📈 MIN_SCORE_SHORT: {MIN_SCORE_SHORT}, MIN_SCORE_LONG: {MIN_SCORE_LONG}")
+print(f"📊 MIN_ATR: {MIN_ATR_PERCENT}%, MAX_ATR: {MAX_ATR_PERCENT}%")
+print(f"💰 MIN_VOLUME: ${MIN_VOLUME_USDT:,}")
+print(f"🟡 REQUIRE_GOLDEN_CROSS: {REQUIRE_GOLDEN_CROSS}")
+
+send("🚀 <b>DUAL SIGNAL SCANNER STARTED (UPDATED)</b>\n\n📉 SHORT: Score > 70 + ATR 1.5-4% + Volume > 1M\n📈 LONG: Score > 70 + Golden Cross + ATR 1.5-4%\n🎯 Only quality signals will be sent!")
 
 while True:
     try:
@@ -589,7 +677,7 @@ while True:
         # SCAN SHORT
         print("\n📉 Scanning for SHORT opportunities...")
         short_opps = scan_short_opportunities()
-        print(f"Found {len(short_opps)} SHORT opportunities")
+        print(f"Found {len(short_opps)} SHORT opportunities (filtered)")
         
         for opp in short_opps[:5]:
             if opp['symbol'] in sent_short:
@@ -597,11 +685,12 @@ while True:
             message = format_short_message(opp)
             send(message)
             sent_short.add(opp['symbol'])
+            print(f"  ✅ Sent SHORT: {opp['symbol']} (Score: {opp['score']}, ATR: {opp['atr_percent']:.2f}%)")
         
         # SCAN LONG
         print("\n📈 Scanning for LONG opportunities...")
         long_opps = scan_long_opportunities(MAX_COINS_TO_SCAN)
-        print(f"Found {len(long_opps)} LONG opportunities")
+        print(f"Found {len(long_opps)} LONG opportunities (filtered)")
         
         for opp in long_opps[:5]:
             if opp['symbol'] in sent_long:
@@ -609,14 +698,17 @@ while True:
             message = format_long_message(opp)
             send(message)
             sent_long.add(opp['symbol'])
+            print(f"  ✅ Sent LONG: {opp['symbol']} (Score: {opp['score']}, ATR: {opp['atr_percent']:.2f}%)")
         
         # SEND SUMMARY
         if short_opps or long_opps:
             send_summary(short_opps[:5], long_opps[:5])
         else:
-            send("📊 <b>SCAN COMPLETE</b>\n━━━━━━━━━━━━━━━━━━\nNo strong signals found.\n━━━━━━━━━━━━━━━━━━")
+            send("📊 <b>SCAN COMPLETE</b>\n━━━━━━━━━━━━━━━━━━\nNo quality signals found this cycle.\nKeeping scanning for good opportunities...\n━━━━━━━━━━━━━━━━━━")
         
         print(f"\n✅ Scan complete. Total SHORT: {len(short_opps)}, LONG: {len(long_opps)}")
+        print(f"💰 SHORT signals sent: {len(sent_short)}")
+        print(f"💰 LONG signals sent: {len(sent_long)}")
         print(f"⏳ Waiting {INTERVAL} seconds...\n")
         
         time.sleep(INTERVAL)

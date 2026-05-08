@@ -25,14 +25,14 @@ MIN_VOLUME = 100000
 MIN_BULLISH_SCORE = 15
 MAX_POSITION_SIZE = 100
 MAX_LEVERAGE = 2
-MAX_COINS_TO_SCAN = 200
+MAX_COINS_TO_SCAN = 500
 
 # =========================================================
-# إعدادات فلترة الإشارات (الجديدة)
+# إعدادات فلترة الإشارات
 # =========================================================
 
-MIN_SCORE_SHORT = 70      # أقل درجة للإشارة SHORT (كان 55)
-MIN_SCORE_LONG = 70       # أقل درجة للإشارة LONG (كان 15)
+MIN_SCORE_SHORT = 70      # أقل درجة للإشارة SHORT
+MIN_SCORE_LONG = 70       # أقل درجة للإشارة LONG
 MIN_VOLUME_USDT = 1000000 # أقل حجم تداول (1 مليون دولار)
 REQUIRE_GOLDEN_CROSS = True  # هل نطلب Golden Cross إجباري؟
 
@@ -42,6 +42,14 @@ REQUIRE_GOLDEN_CROSS = True  # هل نطلب Golden Cross إجباري؟
 
 MIN_ATR_PERCENT = 1.5     # أقل نسبة تحرك مطلوبة
 MAX_ATR_PERCENT = 4.0     # أعلى نسبة تحرك مقبولة
+
+# =========================================================
+# إعدادات المسح المجمّع
+# =========================================================
+
+BATCH_SIZE = 100             # عدد العملات في كل مجموعة
+BATCH_SCAN_TIME = 300        # 5 دقائق للمسح (بالثواني)
+REST_TIME_BETWEEN_BATCHES = 60  # دقيقة راحة بين المجموعات (بالثواني)
 
 # =========================================================
 # TELEGRAM
@@ -343,18 +351,19 @@ def scan_short_opportunities():
     return opportunities
 
 # =========================================================
-# SCAN LONG
+# SCAN LONG WITH BATCHES
 # =========================================================
 
-def scan_long_opportunities(limit=MAX_COINS_TO_SCAN):
-    symbols = get_all_usdt_pairs(limit)
-    print(f"Scanning {len(symbols)} coins for LONG opportunities...")
+def scan_long_opportunities_batch(batch_symbols, batch_num, total_batches):
+    """مسح مجموعة واحدة من العملات"""
+    print(f"\n📦 BATCH {batch_num}/{total_batches} - Scanning {len(batch_symbols)} coins...")
+    start_time = time.time()
     
     opportunities = []
     
-    for i, sym in enumerate(symbols):
-        if i % 50 == 0:
-            print(f"Progress: {i}/{len(symbols)}")
+    for i, sym in enumerate(batch_symbols):
+        if i % 50 == 0 and i > 0:
+            print(f"  [{batch_num}] Progress: {i+1}/{len(batch_symbols)}")
         
         dataframes = klines_multiple_timeframes(sym)
         if not dataframes:
@@ -453,8 +462,25 @@ def scan_long_opportunities(limit=MAX_COINS_TO_SCAN):
         
         time.sleep(0.3)
     
-    opportunities.sort(key=lambda x: x['score'], reverse=True)
+    elapsed = time.time() - start_time
+    print(f"  ✅ Batch {batch_num} completed in {elapsed:.1f} seconds. Found {len(opportunities)} signals.")
+    
     return opportunities
+
+def send_batch_status(batch_num, total_batches, found_count, elapsed_time, remaining_rest):
+    """إرسال حالة المجموعة إلى التلغرام"""
+    status_message = f"""
+📦 <b>BATCH SCAN STATUS</b>
+━━━━━━━━━━━━━━━━━━
+📌 Batch: {batch_num}/{total_batches}
+⏱ Scan time: {elapsed_time:.1f} sec
+🎯 Signals found: {found_count}
+
+⏳ Next batch in: {remaining_rest} seconds
+━━━━━━━━━━━━━━━━━━
+🟢 Scanning in progress...
+"""
+    send(status_message)
 
 # =========================================================
 # MESSAGE FORMATTING
@@ -651,68 +677,160 @@ def send_summary(short_opps, long_opps):
 """
     send(summary)
 
+def send_full_scan_summary(short_opps, all_long_opportunities, total_time, scan_number):
+    """إرسال ملخص المسح الكامل"""
+    summary = f"""
+✅ <b>FULL SCAN #{scan_number} COMPLETE</b>
+━━━━━━━━━━━━━━━━━━
+⏱ Total time: {total_time/60:.1f} minutes
+📉 SHORT signals: {len(short_opps)}
+📈 LONG signals: {len(all_long_opportunities)}
+🎯 Total signals: {len(short_opps) + len(all_long_opportunities)}
+
+"""
+    if short_opps or all_long_opportunities:
+        summary += f"<b>🏆 TOP SIGNALS:</b>\n"
+        count = 1
+        for opp in short_opps[:3]:
+            summary += f"{count}. SHORT {opp['symbol']} - Score: {opp['score']}\n"
+            count += 1
+        for opp in all_long_opportunities[:3]:
+            summary += f"{count}. LONG {opp['symbol']} - Score: {opp['score']}\n"
+            count += 1
+    else:
+        summary += f"📊 No quality signals found this cycle.\n━━━━━━━━━━━━━━━━━━\n🟡 Continuing scanning..."
+    
+    summary += f"""
+━━━━━━━━━━━━━━━━━━
+⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+    send(summary)
+
 # =========================================================
-# MAIN LOOP
+# MAIN LOOP WITH BATCHES
 # =========================================================
 
 sent_short = set()
 sent_long = set()
+full_scan_counter = 0
 
-print("🚀 DUAL SIGNAL SCANNER STARTED (SHORT + LONG)")
-print(f"📊 Will scan up to {MAX_COINS_TO_SCAN} coins for LONG opportunities")
-print("📊 Will scan ALL coins for SHORT opportunities")
-print(f"📈 MIN_SCORE_SHORT: {MIN_SCORE_SHORT}, MIN_SCORE_LONG: {MIN_SCORE_LONG}")
-print(f"📊 MIN_ATR: {MIN_ATR_PERCENT}%, MAX_ATR: {MAX_ATR_PERCENT}%")
-print(f"💰 MIN_VOLUME: ${MIN_VOLUME_USDT:,}")
-print(f"🟡 REQUIRE_GOLDEN_CROSS: {REQUIRE_GOLDEN_CROSS}")
+print("🚀 DUAL SIGNAL SCANNER STARTED (BATCH MODE)")
+print(f"📊 Total coins: {MAX_COINS_TO_SCAN}")
+print(f"📦 Batch size: {BATCH_SIZE} coins")
+print(f"⏱ Batch scan time: {BATCH_SCAN_TIME} seconds max")
+print(f"💤 Rest between batches: {REST_TIME_BETWEEN_BATCHES} seconds")
+total_batches = (MAX_COINS_TO_SCAN + BATCH_SIZE - 1) // BATCH_SIZE
+total_minutes = ((BATCH_SCAN_TIME + REST_TIME_BETWEEN_BATCHES) * total_batches) / 60
+print(f"🎯 Total scan time: ~{total_minutes:.0f} minutes")
 
-send("🚀 <b>DUAL SIGNAL SCANNER STARTED (UPDATED)</b>\n\n📉 SHORT: Score > 70 + ATR 1.5-4% + Volume > 1M\n📈 LONG: Score > 70 + Golden Cross + ATR 1.5-4%\n🎯 Only quality signals will be sent!")
+send(f"🚀 <b>DUAL SIGNAL SCANNER STARTED (BATCH MODE)</b>\n\n📊 Total: {MAX_COINS_TO_SCAN} coins\n📦 {BATCH_SIZE} coins per batch\n⏱ ~{total_minutes:.0f} minutes per full scan\n\n🎯 Quality signals only (Score > 70 + ATR 1.5-4% + Volume > 1M)")
 
 while True:
     try:
-        print(f"\n{'='*50}")
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting scan cycle...")
-        print(f"{'='*50}")
+        full_scan_counter += 1
+        full_scan_start = time.time()
         
-        # SCAN SHORT
+        print(f"\n{'='*60}")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting FULL SCAN #{full_scan_counter}")
+        print(f"{'='*60}")
+        
+        send(f"🔄 <b>FULL SCAN #{full_scan_counter} STARTED</b>\n━━━━━━━━━━━━━━━━━━\nScanning {MAX_COINS_TO_SCAN} coins in batches...")
+        
+        # =================================================
+        # SCAN SHORT (يبقى كما هو - سريع)
+        # =================================================
         print("\n📉 Scanning for SHORT opportunities...")
         short_opps = scan_short_opportunities()
         print(f"Found {len(short_opps)} SHORT opportunities (filtered)")
         
+        short_sent = []
         for opp in short_opps[:5]:
             if opp['symbol'] in sent_short:
                 continue
             message = format_short_message(opp)
             send(message)
             sent_short.add(opp['symbol'])
+            short_sent.append(opp)
             print(f"  ✅ Sent SHORT: {opp['symbol']} (Score: {opp['score']}, ATR: {opp['atr_percent']:.2f}%)")
         
-        # SCAN LONG
-        print("\n📈 Scanning for LONG opportunities...")
-        long_opps = scan_long_opportunities(MAX_COINS_TO_SCAN)
-        print(f"Found {len(long_opps)} LONG opportunities (filtered)")
+        # =================================================
+        # SCAN LONG WITH BATCHES
+        # =================================================
+        print("\n📈 Scanning for LONG opportunities in batches...")
         
-        for opp in long_opps[:5]:
-            if opp['symbol'] in sent_long:
-                continue
-            message = format_long_message(opp)
-            send(message)
-            sent_long.add(opp['symbol'])
-            print(f"  ✅ Sent LONG: {opp['symbol']} (Score: {opp['score']}, ATR: {opp['atr_percent']:.2f}%)")
+        # الحصول على جميع العملات
+        all_symbols = get_all_usdt_pairs(MAX_COINS_TO_SCAN)
+        total_batches = (len(all_symbols) + BATCH_SIZE - 1) // BATCH_SIZE
         
-        # SEND SUMMARY
-        if short_opps or long_opps:
-            send_summary(short_opps[:5], long_opps[:5])
-        else:
-            send("📊 <b>SCAN COMPLETE</b>\n━━━━━━━━━━━━━━━━━━\nNo quality signals found this cycle.\nKeeping scanning for good opportunities...\n━━━━━━━━━━━━━━━━━━")
+        all_long_opportunities = []
         
-        print(f"\n✅ Scan complete. Total SHORT: {len(short_opps)}, LONG: {len(long_opps)}")
-        print(f"💰 SHORT signals sent: {len(sent_short)}")
-        print(f"💰 LONG signals sent: {len(sent_long)}")
-        print(f"⏳ Waiting {INTERVAL} seconds...\n")
+        for batch_num in range(total_batches):
+            batch_start = batch_num * BATCH_SIZE
+            batch_end = min(batch_start + BATCH_SIZE, len(all_symbols))
+            batch_symbols = all_symbols[batch_start:batch_end]
+            
+            # إرسال بداية المجموعة
+            send(f"📦 <b>Starting Batch {batch_num + 1}/{total_batches}</b>\n━━━━━━━━━━━━━━━━━━\nScanning {len(batch_symbols)} coins...")
+            
+            batch_start_time = time.time()
+            
+            # مسح المجموعة
+            batch_opps = scan_long_opportunities_batch(
+                batch_symbols, 
+                batch_num + 1, 
+                total_batches
+            )
+            
+            batch_elapsed = time.time() - batch_start_time
+            
+            # إرسال إشارات المجموعة
+            batch_sent = 0
+            for opp in batch_opps:
+                if opp['symbol'] in sent_long:
+                    continue
+                message = format_long_message(opp)
+                send(message)
+                sent_long.add(opp['symbol'])
+                all_long_opportunities.append(opp)
+                batch_sent += 1
+                print(f"  ✅ Sent LONG: {opp['symbol']} (Score: {opp['score']}, ATR: {opp['atr_percent']:.2f}%)")
+            
+            # انتظر حتى تكتمل 5 دقائق إذا لزم الأمر
+            if batch_elapsed < BATCH_SCAN_TIME:
+                wait_time = BATCH_SCAN_TIME - batch_elapsed
+                print(f"  ⏳ Waiting {wait_time:.1f} seconds to complete 5 min batch...")
+                time.sleep(wait_time)
+            
+            # إرسال حالة المجموعة
+            remaining_rest = REST_TIME_BETWEEN_BATCHES if batch_num < total_batches - 1 else 0
+            send_batch_status(
+                batch_num + 1, 
+                total_batches, 
+                batch_sent, 
+                batch_elapsed,
+                remaining_rest
+            )
+            
+            # راحة بين المجموعات (ما عدا آخر مجموعة)
+            if batch_num < total_batches - 1:
+                print(f"  💤 Resting {REST_TIME_BETWEEN_BATCHES} seconds before next batch...")
+                time.sleep(REST_TIME_BETWEEN_BATCHES)
         
-        time.sleep(INTERVAL)
+        # =================================================
+        # إرسال الملخص الكامل
+        # =================================================
+        full_scan_elapsed = time.time() - full_scan_start
+        
+        send_full_scan_summary(short_sent, all_long_opportunities, full_scan_elapsed, full_scan_counter)
+        
+        print(f"\n✅ Full scan #{full_scan_counter} complete in {full_scan_elapsed/60:.1f} minutes")
+        print(f"   SHORT signals: {len(short_sent)}")
+        print(f"   LONG signals: {len(all_long_opportunities)}")
+        print(f"⏳ Next full scan will start immediately...\n")
+        
+        # راحة قصيرة قبل البدء من جديد
+        time.sleep(10)
         
     except Exception as e:
         print(f"❌ ERROR: {e}")
-        time.sleep(INTERVAL)
+        time.sleep(60)

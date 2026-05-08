@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 
 TELEGRAM_TOKEN = "8628541851:AAGTo4LDtxv8WOy40L5YI7kqIdwv2SLNUKI"
 
-CHAT_IDS = [
+CHAT_IDS = ["5067771509"٫
     "-1003890327415"
 ]
 

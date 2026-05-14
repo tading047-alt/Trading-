@@ -21,23 +21,23 @@ CHAT_IDS = [
 INTERVAL = 180  # 3 دقائق بين الدورات
 
 # إعدادات SHORT
-MIN_PUMP = 8
-MIN_VOLUME = 50000
+MIN_PUMP = 4                       # تم التخفيض من 8 إلى 4
+MIN_VOLUME = 100000
 
 # إعدادات LONG
 MAX_POSITION_SIZE = 100
 MAX_LEVERAGE = 2
 MAX_COINS_TO_SCAN = 500
 
-# إعدادات فلترة الإشارات
-MIN_SCORE_SHORT = 65
-MIN_SCORE_LONG = 65
-MIN_VOLUME_USDT = 500000
-REQUIRE_GOLDEN_CROSS = False
+# إعدادات فلترة الإشارات (تم التعديل)
+MIN_SCORE_SHORT = 60               # تم التخفيض من 70 إلى 60
+MIN_SCORE_LONG = 60                # تم التخفيض من 70 إلى 60
+MIN_VOLUME_USDT = 250000           # تم التخفيض من 1000000 إلى 250000
+REQUIRE_GOLDEN_CROSS = False       # تم الإلغاء (كان True)
 
-# إعدادات ATR
-MIN_ATR_PERCENT = 1.5
-MAX_ATR_PERCENT = 4.0
+# إعدادات ATR (تم التوسيع)
+MIN_ATR_PERCENT = 0.8              # تم التخفيض من 1.5 إلى 0.8
+MAX_ATR_PERCENT = 8.0              # تم الرفع من 4.0 إلى 8.0
 
 # إعدادات المسح المجمّع
 BATCH_SIZE = 100
@@ -276,7 +276,7 @@ class PaperTrading:
         with self.lock:
             if len(self.positions) >= MAX_POSITIONS_SIMULTANEOUS:
                 return False
-            if signal_score >= 75:
+            if signal_score >= 70:  # Paper trading يدخل فقط الإشارات القوية
                 return True
             return False
     
@@ -750,9 +750,7 @@ def scan_long_opportunities_batch(batch_symbols, batch_num, total_batches):
         if total_score < MIN_SCORE_LONG:
             continue
         
-        main_tf_4h = analyses.get('4h', {})
-        if REQUIRE_GOLDEN_CROSS and not main_tf_4h.get('golden_cross', False):
-            continue
+        # Golden Cross لم يعد إجبارياً (تم إلغاء الشرط)
         
         main_tf = analyses.get('4h') or analyses.get('1h') or analyses.get('15m')
         current_price = main_tf['current_price']
@@ -984,8 +982,11 @@ if PAPER_TRADING_ENABLED:
 print("🚀 SIGNAL SCANNER STARTED - SENDING SIGNALS ONLY")
 print(f"📊 Total coins: {MAX_COINS_TO_SCAN}")
 print(f"💰 Paper Trading: {'ON' if PAPER_TRADING_ENABLED else 'OFF'}")
+print(f"📈 MIN_SCORE: {MIN_SCORE_LONG} | MIN_PUMP: {MIN_PUMP} | MIN_VOLUME: ${MIN_VOLUME_USDT}")
+print(f"📊 ATR Range: {MIN_ATR_PERCENT}% - {MAX_ATR_PERCENT}%")
+print(f"🟡 Golden Cross Required: {REQUIRE_GOLDEN_CROSS}")
 
-send(f"🚀 <b>SIGNAL SCANNER + PAPER TRADING STARTED</b>\n\n📊 Scanning {MAX_COINS_TO_SCAN} coins\n💰 Paper Trading Active\n💵 Initial Balance: ${PAPER_INITIAL_BALANCE}\n\n🎯 Only quality signals (Score > 75) will be executed in paper trading!")
+send(f"🚀 <b>SIGNAL SCANNER + PAPER TRADING STARTED (UPDATED)</b>\n\n📊 Scanning {MAX_COINS_TO_SCAN} coins\n💰 Paper Trading Active\n💵 Initial Balance: ${PAPER_INITIAL_BALANCE}\n\n📈 MIN_SCORE: {MIN_SCORE_LONG}\n📊 ATR: {MIN_ATR_PERCENT}%-{MAX_ATR_PERCENT}%\n🟡 Golden Cross: {'Required' if REQUIRE_GOLDEN_CROSS else 'Optional'}\n\n🎯 Quality signals will be sent to Telegram!")
 
 last_excel_send = time.time()
 
@@ -1007,7 +1008,7 @@ while True:
                 continue
             
             paper_executed = False
-            if PAPER_TRADING_ENABLED and opp['score'] >= 75:
+            if PAPER_TRADING_ENABLED and opp['score'] >= 70:
                 stop_loss = opp['current_price'] * 1.02
                 take_profit = opp['current_price'] * 0.97
                 paper.enter_short(opp['symbol'], opp['current_price'], stop_loss, take_profit, opp['score'])
@@ -1016,7 +1017,7 @@ while True:
             message = format_short_message(opp, paper_executed)
             send(message)
             sent_short.add(opp['symbol'])
-            print(f"  ✅ Sent SHORT: {opp['symbol']}")
+            print(f"  ✅ Sent SHORT: {opp['symbol']} (Score: {opp['score']})")
         
         # =================================================
         # SCAN LONG WITH BATCHES
@@ -1042,7 +1043,7 @@ while True:
                     continue
                 
                 paper_executed = False
-                if PAPER_TRADING_ENABLED and opp['score'] >= 75:
+                if PAPER_TRADING_ENABLED and opp['score'] >= 70:
                     stop_loss = opp['current_price'] * 0.98
                     take_profit = opp['current_price'] * 1.03
                     paper.enter_long(opp['symbol'], opp['current_price'], stop_loss, take_profit, opp['score'])
@@ -1052,7 +1053,7 @@ while True:
                 send(message)
                 sent_long.add(opp['symbol'])
                 all_long_opportunities.append(opp)
-                print(f"  ✅ Sent LONG: {opp['symbol']}")
+                print(f"  ✅ Sent LONG: {opp['symbol']} (Score: {opp['score']})")
             
             time.sleep(BATCH_SCAN_TIME)
             

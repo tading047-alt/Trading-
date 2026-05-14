@@ -1,707 +1,1078 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-"""
-Binance Scanner Bot - ماسح عملات Binance مع إشارات بيع قصير (SHORT)
-الإصدار: V3.0
-"""
-
-import os
-import sys
 import time
-import json
-import logging
-import signal
-from datetime import datetime
-from functools import lru_cache
-from typing import Optional, Dict, List, Any
-
 import requests
 import pandas as pd
 import numpy as np
-from dotenv import load_dotenv
-
-# تحميل المتغيرات من ملف .env
-load_dotenv()
-
-# =========================================================
-# إعدادات التسجيل (Logging)
-# =========================================================
-
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("scanner.log", encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
-
-logger = logging.getLogger(__name__)
+from datetime import datetime, timedelta
+import threading
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment
 
 # =========================================================
-# إعدادات التشغيل (من متغيرات البيئة)
+# CONFIG
 # =========================================================
 
-# إعدادات Telegram
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-if not TELEGRAM_TOKEN:
-    logger.error("❌ لم يتم العثور على TELEGRAM_TOKEN في متغيرات البيئة")
-    logger.error("📌 أنشئ ملف .env وأضف فيه: TELEGRAM_TOKEN=your_token_here")
-    sys.exit(1)
+TELEGRAM_TOKEN = "8628541851:AAGTo4LDtxv8WOy40L5YI7kqIdwv2SLNUKI"
 
-CHAT_IDS = [x.strip() for x in os.getenv("CHAT_IDS", "").split(",") if x.strip()]
-if not CHAT_IDS:
-    logger.error("❌ لم يتم العثور على CHAT_IDS في متغيرات البيئة")
-    sys.exit(1)
+CHAT_IDS = [
+    "5067771509",
+    "2107567005"
+]
 
-# إعدادات المسح
-INTERVAL = int(os.getenv("SCAN_INTERVAL", "180"))
-MIN_PUMP = float(os.getenv("MIN_PUMP", "10"))
-MIN_VOLUME = float(os.getenv("MIN_VOLUME", "200000"))
-TEST_MODE = os.getenv("TEST_MODE", "False").lower() == "true"
+INTERVAL = 180  # 3 دقائق بين الدورات
 
-# عتبات التصنيف
-SCORE_VERY_GOOD = int(os.getenv("SCORE_VERY_GOOD", "85"))
-SCORE_GOOD = int(os.getenv("SCORE_GOOD", "70"))
-SCORE_MEDIUM = int(os.getenv("SCORE_MEDIUM", "55"))
+# إعدادات SHORT
+MIN_PUMP = 8
+MIN_VOLUME = 100000
 
-# إعدادات إدارة المخاطر
-POSITION_SIZE = os.getenv("POSITION_SIZE", "5")
-LEVERAGE = os.getenv("LEVERAGE", "2")
+# إعدادات LONG
+MAX_POSITION_SIZE = 100
+MAX_LEVERAGE = 2
+MAX_COINS_TO_SCAN = 500
 
-# =========================================================
-# متغيرات عامة
-# =========================================================
+# إعدادات فلترة الإشارات
+MIN_SCORE_SHORT = 70
+MIN_SCORE_LONG = 70
+MIN_VOLUME_USDT = 1000000
+REQUIRE_GOLDEN_CROSS = True
 
-sent_signals = set()
-running = True
-cache_buster = int(time.time() // 300)
+# إعدادات ATR
+MIN_ATR_PERCENT = 1.5
+MAX_ATR_PERCENT = 4.0
 
-
-def signal_handler(sig, frame):
-    """معالجة إشارة الإيقاف (Ctrl+C)"""
-    global running
-    logger.info("\n🛑 استلام إشارة إيقاف، جاري إغلاق الماسح...")
-    running = False
-
-
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
-
+# إعدادات المسح المجمّع
+BATCH_SIZE = 100
+BATCH_SCAN_TIME = 300
+REST_TIME_BETWEEN_BATCHES = 60
 
 # =========================================================
-# دوال Telegram
+# PAPER TRADING CONFIG
 # =========================================================
 
-def send_telegram_message(msg: str) -> bool:
-    """
-    إرسال رسالة إلى تيليجرام
-    تعيد True إذا نجح الإرسال إلى قناة واحدة على الأقل
-    """
-    if TEST_MODE:
-        print(f"\n📨 [TEST MODE] كان سيرسل:\n{msg}\n{'-'*60}\n")
-        return True
-    
+PAPER_TRADING_ENABLED = True
+PAPER_INITIAL_BALANCE = 10000
+PAPER_POSITION_SIZE = 100
+PAPER_SLIPPAGE = 0.001
+PAPER_FEE = 0.001
+MAX_POSITIONS_SIMULTANEOUS = 5
+
+# =========================================================
+# TELEGRAM
+# =========================================================
+
+def send(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    success = False
-    
-    for chat_id in CHAT_IDS:
+    for chat in CHAT_IDS:
         try:
             response = requests.post(
                 url,
-                json={
-                    "chat_id": chat_id,
+                data={
+                    "chat_id": chat,
                     "text": msg,
                     "parse_mode": "HTML"
                 },
                 timeout=10
             )
-            if response.status_code == 200:
-                logger.info(f"✅ تم الإرسال إلى {chat_id}")
-                success = True
-            else:
-                logger.warning(f"⚠️ فشل الإرسال إلى {chat_id}: {response.status_code}")
+            print(f"Sent to {chat}: {response.status_code}")
         except Exception as e:
-            logger.error(f"❌ خطأ في الإرسال إلى {chat_id}: {e}")
-    
-    return success
-
-
-def send_startup_message():
-    """إرسال رسالة بدء التشغيل"""
-    msg = f"""
-🚀 <b>BINANCE SCANNER V3 STARTED</b>
-
-📊 <b>الإعدادات:</b>
-• الفاصل الزمني: {INTERVAL} ثانية
-• أقل مضخة: {MIN_PUMP}%
-• أقل حجم: {MIN_VOLUME:,.0f}$
-• وضع الاختبار: {"نعم" if TEST_MODE else "لا"}
-
-⏱ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-"""
-    send_telegram_message(msg)
-
+            print(f"Error sending to {chat}: {e}")
 
 # =========================================================
-# المؤشرات الفنية
+# INDICATORS
 # =========================================================
 
-def calculate_rsi(series: pd.Series, period: int = 14) -> pd.Series:
-    """حساب مؤشر RSI"""
+def rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
-    
     avg_gain = gain.rolling(period).mean()
     avg_loss = loss.rolling(period).mean()
-    
     rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    
-    return rsi
+    return 100 - (100 / (1 + rs))
 
-
-def calculate_ema(series: pd.Series, period: int = 20) -> pd.Series:
-    """حساب المتوسط المتحرك الأسي EMA"""
+def ema(series, period=20):
     return series.ewm(span=period, adjust=False).mean()
 
+def calculate_bollinger_bands(df, period=20, std=2):
+    middle = df['close'].rolling(period).mean()
+    std_dev = df['close'].rolling(period).std()
+    upper = middle + (std_dev * std)
+    lower = middle - (std_dev * std)
+    return upper, middle, lower
 
-def calculate_stochastic_rsi(series: pd.Series, period: int = 14) -> pd.Series:
-    """حساب Stochastic RSI"""
-    rsi_values = calculate_rsi(series, period)
-    min_rsi = rsi_values.rolling(period).min()
-    max_rsi = rsi_values.rolling(period).max()
+def check_golden_cross(df):
+    df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
+    df['ema_200'] = df['close'].ewm(span=200, adjust=False).mean()
     
-    stoch_rsi = (rsi_values - min_rsi) / (max_rsi - min_rsi) * 100
-    return stoch_rsi.fillna(50)
-
-
-# =========================================================
-# أنماط الشموع
-# =========================================================
-
-def has_long_upper_wick(df: pd.DataFrame, ratio: float = 2.0) -> bool:
-    """
-    فحص وجود فتيل علوي طويل
-    تشير إلى رفض السعر العالي (إشارة بيع)
-    """
-    candle = df.iloc[-1]
-    body = abs(candle["c"] - candle["o"])
-    upper_wick = candle["h"] - max(candle["c"], candle["o"])
+    ema_50_current = df['ema_50'].iloc[-1]
+    ema_200_current = df['ema_200'].iloc[-1]
+    ema_50_prev = df['ema_50'].iloc[-2]
+    ema_200_prev = df['ema_200'].iloc[-2]
     
-    if body < 1e-8:
-        body = 1e-8
-    
-    return upper_wick / body > ratio
+    if ema_50_prev <= ema_200_prev and ema_50_current > ema_200_current:
+        return True, "Golden Cross detected ✅"
+    elif ema_50_current > ema_200_current:
+        return True, "EMA 50 above EMA 200 🟢"
+    return False, "No golden cross"
 
-
-def has_bearish_engulfing(df: pd.DataFrame) -> bool:
-    """فحص نمط Bearish Engulfing"""
-    if len(df) < 2:
-        return False
+def check_bullish_candles(df):
+    last_5_candles = df.tail(6)
+    bullish_count = 0
     
+    for i in range(len(last_5_candles)-1):
+        if last_5_candles['close'].iloc[i] > last_5_candles['open'].iloc[i]:
+            bullish_count += 1
+        if i > 0:
+            if last_5_candles['close'].iloc[i] > last_5_candles['high'].iloc[i-1]:
+                bullish_count += 1
+    
+    last_candle = last_5_candles.iloc[-1]
+    prev_candle = last_5_candles.iloc[-2]
+    
+    is_engulfing = (last_candle['close'] > last_candle['open'] and 
+                   last_candle['open'] < prev_candle['close'] and
+                   last_candle['close'] > prev_candle['open'])
+    
+    if is_engulfing:
+        pattern = "Bullish Engulfing 🟢"
+    elif bullish_count >= 5:
+        pattern = "Bullish Rejection ✅"
+    elif bullish_count >= 3:
+        pattern = "Weak Bullish 📈"
+    else:
+        pattern = "Neutral ⚪"
+        
+    return pattern, bullish_count, is_engulfing
+
+def wick(df):
+    c = df.iloc[-1]
+    body = abs(c["c"] - c["o"])
+    upper = c["h"] - max(c["c"], c["o"])
+    if body == 0:
+        body = 0.001
+    return upper / body > 2
+
+def volume_weak(df):
+    return df["v"].tail(3).mean() < df["v"].tail(15).mean()
+
+def bearish(df):
     prev = df.iloc[-2]
     curr = df.iloc[-1]
-    
-    prev_bullish = prev["c"] > prev["o"]
-    curr_bearish = curr["c"] < curr["o"]
-    curr_engulfs = curr["o"] > prev["c"] and curr["c"] < prev["o"]
-    
-    return prev_bullish and curr_bearish and curr_engulfs
+    return (
+        prev["c"] > prev["o"]
+        and curr["c"] < curr["o"]
+        and curr["o"] > prev["c"]
+    )
 
-
-def is_volume_decreasing(df: pd.DataFrame, short: int = 3, long: int = 15) -> bool:
-    """فحص ضعف الحجم (آخر 3 شموع أقل من متوسط 15 شمعة)"""
-    if len(df) < long:
-        return False
-    return df["v"].tail(short).mean() < df["v"].tail(long).mean()
-
-
-def is_rsi_divergence(df: pd.DataFrame) -> Dict[str, bool]:
-    """فحص تباعد RSI (Divergence)"""
-    if len(df) < 20:
-        return {"bearish": False, "bullish": False}
-    
-    # أعلى 5 قمم للسعر و RSI
-    price_highs = df["h"].tail(20)
-    rsi_vals = df["rsi"].tail(20)
-    
-    # تباعد سلبي (Bearish Divergence): سعر أعلى ولكن RSI أقل
-    price_peak_idx = price_highs.idxmax()
-    rsi_at_peak = rsi_vals.loc[price_peak_idx]
-    current_rsi = rsi_vals.iloc[-1]
-    
-    bearish_div = (price_highs.iloc[-1] > price_highs.iloc[-2] and 
-                   current_rsi < rsi_at_peak)
-    
-    return {"bearish": bearish_div, "bullish": False}
-
+def calculate_atr(df, period=14):
+    try:
+        high = df['h']
+        low = df['l']
+        close = df['c']
+        
+        tr1 = high - low
+        tr2 = abs(high - close.shift())
+        tr3 = abs(low - close.shift())
+        
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(period).mean()
+        
+        current_price = close.iloc[-1]
+        if current_price > 0:
+            atr_percent = (atr.iloc[-1] / current_price) * 100
+        else:
+            atr_percent = 0
+            
+        return {
+            'atr': atr.iloc[-1],
+            'atr_percent': atr_percent,
+            'is_good': MIN_ATR_PERCENT <= atr_percent <= MAX_ATR_PERCENT
+        }
+    except:
+        return {'atr': 0, 'atr_percent': 0, 'is_good': False}
 
 # =========================================================
-# جلب البيانات من Binance
+# PAPER TRADING CLASS
 # =========================================================
 
-@lru_cache(maxsize=100)
-def fetch_klines(symbol: str, _cache_key: int = None) -> Optional[pd.DataFrame]:
-    """
-    جلب بيانات الشموع من Binance
-    _cache_key: معلمة لكسر الكاش عند الحاجة
-    """
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit=200"
+class PaperTrading:
+    def __init__(self, initial_balance=PAPER_INITIAL_BALANCE):
+        self.balance = initial_balance
+        self.initial_balance = initial_balance
+        self.positions = []
+        self.closed_trades = []
+        self.current_price_cache = {}
+        self.lock = threading.Lock()
+        
+        self.excel_file = f"paper_trading_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        self.create_excel_file()
+        
+        print(f"📊 Paper Trading initialized with ${initial_balance}")
+        print(f"📁 Excel file: {self.excel_file}")
     
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-    except requests.exceptions.RequestException as e:
-        logger.error(f"❌ فشل جلب بيانات {symbol}: {e}")
-        return None
+    def create_excel_file(self):
+        self.workbook = openpyxl.Workbook()
+        
+        sheet_open = self.workbook.active
+        sheet_open.title = "Open Positions"
+        headers_open = ["Time", "Symbol", "Type", "Entry Price", "Position Size", "Stop Loss", "Take Profit", "Current Price", "Status"]
+        sheet_open.append(headers_open)
+        
+        for col in range(1, len(headers_open) + 1):
+            cell = sheet_open.cell(row=1, column=col)
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+            cell.font = Font(color="FFFFFF", bold=True)
+        
+        sheet_closed = self.workbook.create_sheet("Closed Trades")
+        headers_closed = ["Exit Time", "Symbol", "Type", "Entry Price", "Exit Price", "Position Size", "Profit/Loss", "Profit %", "Exit Reason"]
+        sheet_closed.append(headers_closed)
+        
+        for col in range(1, len(headers_closed) + 1):
+            cell = sheet_closed.cell(row=1, column=col)
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+            cell.font = Font(color="FFFFFF", bold=True)
+        
+        sheet_summary = self.workbook.create_sheet("Summary")
+        sheet_summary.append(["Metric", "Value"])
+        sheet_summary.append(["Initial Balance", f"${self.initial_balance}"])
+        sheet_summary.append(["Current Balance", f"${self.balance}"])
+        sheet_summary.append(["Total Profit/Loss", f"${self.balance - self.initial_balance}"])
+        sheet_summary.append(["Total Trades", "0"])
+        sheet_summary.append(["Winning Trades", "0"])
+        sheet_summary.append(["Losing Trades", "0"])
+        sheet_summary.append(["Win Rate", "0%"])
+        
+        self.workbook.save(self.excel_file)
     
-    if not data:
-        logger.warning(f"⚠️ لا توجد بيانات لـ {symbol}")
-        return None
+    def update_summary(self):
+        sheet_summary = self.workbook["Summary"]
+        
+        sheet_summary["B2"] = f"${self.initial_balance:.2f}"
+        sheet_summary["B3"] = f"${self.balance:.2f}"
+        sheet_summary["B4"] = f"${self.balance - self.initial_balance:.2f}"
+        sheet_summary["B5"] = len(self.closed_trades)
+        
+        winning_trades = len([t for t in self.closed_trades if t['profit'] > 0])
+        sheet_summary["B6"] = winning_trades
+        sheet_summary["B7"] = len(self.closed_trades) - winning_trades
+        
+        win_rate = (winning_trades / len(self.closed_trades) * 100) if self.closed_trades else 0
+        sheet_summary["B8"] = f"{win_rate:.1f}%"
+        
+        total_profit = self.balance - self.initial_balance
+        profit_cell = sheet_summary["B4"]
+        if total_profit >= 0:
+            profit_cell.font = Font(color="00FF00", bold=True)
+        else:
+            profit_cell.font = Font(color="FF0000", bold=True)
+        
+        self.workbook.save(self.excel_file)
     
-    df = pd.DataFrame(data)
-    df = df.iloc[:, :6]
-    df.columns = ["timestamp", "open", "high", "low", "close", "volume"]
+    def should_enter_trade(self, signal_score):
+        if not PAPER_TRADING_ENABLED:
+            return False
+        
+        with self.lock:
+            if len(self.positions) >= MAX_POSITIONS_SIMULTANEOUS:
+                return False
+            if signal_score >= 75:
+                return True
+            return False
     
-    for col in ["open", "high", "low", "close", "volume"]:
-        df[col] = pd.to_numeric(df[col])
+    def enter_long(self, symbol, entry_price, stop_loss, take_profit, score):
+        if not self.should_enter_trade(score):
+            return False
+        
+        with self.lock:
+            slippage_cost = PAPER_POSITION_SIZE * PAPER_SLIPPAGE
+            fee_cost = PAPER_POSITION_SIZE * PAPER_FEE
+            total_cost = PAPER_POSITION_SIZE + slippage_cost + fee_cost
+            
+            if total_cost > self.balance:
+                print(f"⚠️ Insufficient balance for {symbol}")
+                return False
+            
+            self.balance -= total_cost
+            
+            position = {
+                'symbol': symbol,
+                'type': 'LONG',
+                'entry_price': entry_price,
+                'stop_loss': stop_loss,
+                'take_profit': take_profit,
+                'position_size': PAPER_POSITION_SIZE,
+                'score': score,
+                'entry_time': datetime.now(),
+                'status': 'OPEN'
+            }
+            self.positions.append(position)
+            
+            sheet = self.workbook["Open Positions"]
+            sheet.append([
+                position['entry_time'].strftime('%Y-%m-%d %H:%M:%S'),
+                symbol,
+                'LONG',
+                entry_price,
+                PAPER_POSITION_SIZE,
+                stop_loss,
+                take_profit,
+                entry_price,
+                'OPEN'
+            ])
+            self.workbook.save(self.excel_file)
+            
+            print(f"📈 [PAPER] Entered LONG {symbol} at ${entry_price}")
+            return True
     
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit='ms')
+    def enter_short(self, symbol, entry_price, stop_loss, take_profit, score):
+        if not self.should_enter_trade(score):
+            return False
+        
+        with self.lock:
+            slippage_cost = PAPER_POSITION_SIZE * PAPER_SLIPPAGE
+            fee_cost = PAPER_POSITION_SIZE * PAPER_FEE
+            total_cost = PAPER_POSITION_SIZE + slippage_cost + fee_cost
+            
+            if total_cost > self.balance:
+                print(f"⚠️ Insufficient balance for {symbol}")
+                return False
+            
+            self.balance -= total_cost
+            
+            position = {
+                'symbol': symbol,
+                'type': 'SHORT',
+                'entry_price': entry_price,
+                'stop_loss': stop_loss,
+                'take_profit': take_profit,
+                'position_size': PAPER_POSITION_SIZE,
+                'score': score,
+                'entry_time': datetime.now(),
+                'status': 'OPEN'
+            }
+            self.positions.append(position)
+            
+            sheet = self.workbook["Open Positions"]
+            sheet.append([
+                position['entry_time'].strftime('%Y-%m-%d %H:%M:%S'),
+                symbol,
+                'SHORT',
+                entry_price,
+                PAPER_POSITION_SIZE,
+                stop_loss,
+                take_profit,
+                entry_price,
+                'OPEN'
+            ])
+            self.workbook.save(self.excel_file)
+            
+            print(f"📉 [PAPER] Entered SHORT {symbol} at ${entry_price}")
+            return True
     
-    return df
-
-
-def fetch_all_tickers() -> List[Dict[str, Any]]:
-    """جلب قائمة جميع العملات من Binance"""
-    url = "https://api.binance.com/api/v3/ticker/24hr"
-    
-    try:
-        response = requests.get(url, timeout=15)
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        logger.error(f"❌ فشل جلب قائمة العملات: {e}")
-        return []
-
-
-def scan_high_pump_coins() -> List[Dict[str, Any]]:
-    """
-    فحص العملات التي تحقق شروط المضخة العالية والحجم الكبير
-    """
-    data = fetch_all_tickers()
-    if not data:
-        return []
-    
-    candidates = []
-    
-    for item in data:
+    def get_current_price(self, symbol):
         try:
-            symbol = item.get("symbol", "")
-            if not symbol.endswith("USDT"):
+            url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+            response = requests.get(url, timeout=5)
+            return float(response.json()['price'])
+        except:
+            return None
+    
+    def update_positions(self):
+        with self.lock:
+            if not self.positions:
+                return
+            
+            sheet = self.workbook["Open Positions"]
+            for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
+                for cell in row:
+                    cell.value = None
+            
+            positions_to_remove = []
+            
+            for pos in self.positions:
+                current_price = self.get_current_price(pos['symbol'])
+                
+                if current_price is None:
+                    continue
+                
+                pos['current_price'] = current_price
+                
+                if pos['type'] == 'LONG':
+                    pnl_percent = ((current_price - pos['entry_price']) / pos['entry_price']) * 100
+                    hit_stop = current_price <= pos['stop_loss']
+                    hit_profit = current_price >= pos['take_profit']
+                else:
+                    pnl_percent = ((pos['entry_price'] - current_price) / pos['entry_price']) * 100
+                    hit_stop = current_price >= pos['stop_loss']
+                    hit_profit = current_price <= pos['take_profit']
+                
+                exit_reason = None
+                exit_price = current_price
+                
+                if hit_stop:
+                    exit_reason = "Stop Loss"
+                elif hit_profit:
+                    exit_reason = "Take Profit"
+                
+                if exit_reason:
+                    if pos['type'] == 'LONG':
+                        profit_percent = ((exit_price - pos['entry_price']) / pos['entry_price']) * 100
+                    else:
+                        profit_percent = ((pos['entry_price'] - exit_price) / pos['entry_price']) * 100
+                    
+                    profit_amount = pos['position_size'] * (profit_percent / 100)
+                    
+                    closed_trade = {
+                        'symbol': pos['symbol'],
+                        'type': pos['type'],
+                        'entry_price': pos['entry_price'],
+                        'exit_price': exit_price,
+                        'position_size': pos['position_size'],
+                        'profit': profit_amount,
+                        'profit_percent': profit_percent,
+                        'exit_reason': exit_reason,
+                        'entry_time': pos['entry_time'],
+                        'exit_time': datetime.now()
+                    }
+                    self.closed_trades.append(closed_trade)
+                    
+                    self.balance += pos['position_size'] + profit_amount
+                    
+                    sheet_closed = self.workbook["Closed Trades"]
+                    sheet_closed.append([
+                        closed_trade['exit_time'].strftime('%Y-%m-%d %H:%M:%S'),
+                        pos['symbol'],
+                        pos['type'],
+                        pos['entry_price'],
+                        exit_price,
+                        pos['position_size'],
+                        f"${profit_amount:.2f}",
+                        f"{profit_percent:.2f}%",
+                        exit_reason
+                    ])
+                    
+                    last_row = sheet_closed.max_row
+                    profit_cell = sheet_closed.cell(row=last_row, column=7)
+                    if profit_amount >= 0:
+                        profit_cell.font = Font(color="00FF00", bold=True)
+                    else:
+                        profit_cell.font = Font(color="FF0000", bold=True)
+                    
+                    positions_to_remove.append(pos)
+                    
+                    print(f"✅ [PAPER] Closed {pos['type']} {pos['symbol']}: {profit_percent:.2f}% ({exit_reason})")
+                else:
+                    row_index = self.positions.index(pos) + 2
+                    sheet.cell(row=row_index, column=8, value=current_price)
+                    sheet.cell(row=row_index, column=9, value='OPEN')
+            
+            for pos in positions_to_remove:
+                self.positions.remove(pos)
+            
+            self.update_summary()
+    
+    def get_summary_message(self):
+        total_profit = self.balance - self.initial_balance
+        winning_trades = len([t for t in self.closed_trades if t['profit'] > 0])
+        losing_trades = len([t for t in self.closed_trades if t['profit'] <= 0])
+        win_rate = (winning_trades / len(self.closed_trades) * 100) if self.closed_trades else 0
+        
+        message = f"""
+📊 <b>PAPER TRADING SUMMARY</b>
+━━━━━━━━━━━━━━━━━━
+💰 <b>Initial Balance:</b> ${self.initial_balance}
+💰 <b>Current Balance:</b> ${self.balance:.2f}
+📈 <b>Total P/L:</b> ${total_profit:.2f}
+
+━━━━━━━━━━━━━━━━━━
+<b>STATISTICS:</b>
+• Total Trades: {len(self.closed_trades)}
+• Winning: {winning_trades}
+• Losing: {losing_trades}
+• Win Rate: {win_rate:.1f}%
+
+━━━━━━━━━━━━━━━━━━
+<b>OPEN POSITIONS:</b> {len(self.positions)}
+"""
+        if self.positions:
+            for pos in self.positions:
+                message += f"\n• {pos['symbol']} ({pos['type']}) @ ${pos['entry_price']:.4f}"
+        
+        message += f"""
+━━━━━━━━━━━━━━━━━━
+⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+        return message
+    
+    def send_excel_to_telegram(self):
+        self.update_positions()
+        self.update_summary()
+        
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
+        
+        with open(self.excel_file, 'rb') as f:
+            files = {'document': f}
+            data = {'chat_id': CHAT_IDS[0], 'caption': f"📊 Paper Trading Report - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"}
+            
+            try:
+                response = requests.post(url, files=files, data=data, timeout=30)
+                print(f"📁 Excel file sent to Telegram: {response.status_code}")
+            except Exception as e:
+                print(f"Error sending file: {e}")
+    
+    def run(self):
+        while True:
+            self.update_positions()
+            time.sleep(60)
+
+# =========================================================
+# BINANCE DATA
+# =========================================================
+
+def klines(symbol, interval='5m', limit=100):
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    try:
+        data = requests.get(url, timeout=10).json()
+        if 'code' in data:
+            return None
+        df = pd.DataFrame(data)
+        df = df.iloc[:, :6]
+        df.columns = ["t","o","h","l","c","v"]
+        for col in ["o","h","l","c","v"]:
+            df[col] = pd.to_numeric(df[col])
+        return df
+    except:
+        return None
+
+def klines_multiple_timeframes(symbol):
+    dataframes = {}
+    
+    df_15m = klines(symbol, '15m', 100)
+    if df_15m is not None and len(df_15m) >= 50:
+        dataframes['15m'] = df_15m
+    
+    df_1h = klines(symbol, '1h', 100)
+    if df_1h is not None and len(df_1h) >= 50:
+        dataframes['1h'] = df_1h
+    
+    df_4h = klines(symbol, '4h', 100)
+    if df_4h is not None and len(df_4h) >= 50:
+        dataframes['4h'] = df_4h
+    
+    return dataframes if dataframes else None
+
+def get_all_usdt_pairs(limit=MAX_COINS_TO_SCAN):
+    url = "https://api.binance.com/api/v3/exchangeInfo"
+    try:
+        data = requests.get(url).json()
+        symbols = []
+        for s in data['symbols']:
+            if s['quoteAsset'] == 'USDT' and s['status'] == 'TRADING':
+                symbols.append(s['symbol'])
+        
+        if len(symbols) > limit:
+            tickers = requests.get("https://api.binance.com/api/v3/ticker/24hr").json()
+            volume_dict = {}
+            for t in tickers:
+                if t['symbol'] in symbols:
+                    try:
+                        volume_dict[t['symbol']] = float(t['quoteVolume'])
+                    except:
+                        volume_dict[t['symbol']] = 0
+            
+            symbols.sort(key=lambda x: volume_dict.get(x, 0), reverse=True)
+            symbols = symbols[:limit]
+        
+        return symbols
+    except Exception as e:
+        print(f"Error getting pairs: {e}")
+        return []
+
+# =========================================================
+# SCAN SHORT
+# =========================================================
+
+def scan_short_opportunities():
+    url = "https://api.binance.com/api/v3/ticker/24hr"
+    try:
+        data = requests.get(url, timeout=10).json()
+    except:
+        return []
+    
+    opportunities = []
+    for c in data:
+        try:
+            sym = c["symbol"]
+            if not sym.endswith("USDT"):
+                continue
+            pump = float(c["priceChangePercent"])
+            vol = float(c["quoteVolume"])
+            
+            if vol < MIN_VOLUME_USDT:
                 continue
             
-            pump = float(item.get("priceChangePercent", 0))
-            volume = float(item.get("quoteVolume", 0))
-            
-            if pump > MIN_PUMP and volume > MIN_VOLUME:
-                candidates.append({
-                    "symbol": symbol,
-                    "pump": pump,
-                    "volume": volume,
-                    "last_price": float(item.get("lastPrice", 0)),
-                    "high_24h": float(item.get("highPrice", 0)),
-                    "low_24h": float(item.get("lowPrice", 0))
+            if pump > MIN_PUMP:
+                df = klines(sym, '5m', 60)
+                if df is None or len(df) < 30:
+                    continue
+                
+                atr_data = calculate_atr(df)
+                
+                df["rsi"] = rsi(df["c"])
+                df["ema"] = ema(df["c"])
+                current_price = df["c"].iloc[-1]
+                current_rsi = df["rsi"].iloc[-1]
+                ema20 = df["ema"].iloc[-1]
+                stretch = ((current_price - ema20) / ema20) * 100
+                
+                score = 0
+                if current_rsi > 65:
+                    score += 20
+                if current_rsi > 75:
+                    score += 10
+                if stretch > 5:
+                    score += 10
+                
+                if wick(df):
+                    score += 15
+                if volume_weak(df):
+                    score += 15
+                if bearish(df):
+                    score += 20
+                
+                if not atr_data['is_good']:
+                    continue
+                
+                if score < MIN_SCORE_SHORT:
+                    continue
+                
+                rsi_5m = current_rsi
+                rsi_15m = df["rsi"].iloc[-3] if len(df) >= 3 else current_rsi
+                rsi_1h = df["rsi"].iloc[-12] if len(df) >= 12 else current_rsi
+                
+                change_4h = ((df["c"].iloc[-1] / df["c"].iloc[-48]) - 1) * 100 if len(df) >= 48 else pump * 0.3
+                change_1h = ((df["c"].iloc[-1] / df["c"].iloc[-12]) - 1) * 100 if len(df) >= 12 else pump * 0.1
+                
+                entry_low = current_price * 1.01
+                entry_high = current_price * 1.03
+                expected_drop = abs(stretch * 0.7)
+                
+                opportunities.append({
+                    'symbol': sym,
+                    'pump': pump,
+                    'score': score,
+                    'current_price': current_price,
+                    'rsi': current_rsi,
+                    'stretch': stretch,
+                    'rsi_5m': rsi_5m,
+                    'rsi_15m': rsi_15m,
+                    'rsi_1h': rsi_1h,
+                    'change_24h': pump,
+                    'change_4h': change_4h,
+                    'change_1h': change_1h,
+                    'entry_low': entry_low,
+                    'entry_high': entry_high,
+                    'drop': expected_drop,
+                    'atr_percent': atr_data['atr_percent']
                 })
-        except (KeyError, ValueError, TypeError) as e:
+        except Exception as e:
             continue
     
-    # ترتيب حسب نسبة المضخة (الأعلى أولاً)
-    candidates.sort(key=lambda x: x["pump"], reverse=True)
-    
-    logger.info(f"🔍 تم العثور على {len(candidates)} عملة تطابق المعايير")
-    
-    return candidates
-
+    opportunities.sort(key=lambda x: x['score'], reverse=True)
+    return opportunities
 
 # =========================================================
-# التحليل الأساسي للعملة
+# SCAN LONG WITH BATCHES
 # =========================================================
 
-def analyze_coin(symbol: str, pump: float) -> Optional[Dict[str, Any]]:
-    """
-    تحليل عملة بشكل عميق وإرجاع النتيجة
-    """
-    global cache_buster
+def scan_long_opportunities_batch(batch_symbols, batch_num, total_batches):
+    opportunities = []
     
-    # تحديث الكاش كل 5 دقائق
-    df = fetch_klines(symbol, _cache_key=cache_buster)
+    for i, sym in enumerate(batch_symbols):
+        dataframes = klines_multiple_timeframes(sym)
+        if not dataframes:
+            continue
+        
+        analyses = {}
+        total_score = 0
+        
+        for tf, df in dataframes.items():
+            if df is None or len(df) < 50:
+                continue
+            
+            atr_data = calculate_atr(df)
+            
+            current_price = df['c'].iloc[-1]
+            df['rsi'] = rsi(df['c'])
+            current_rsi = df['rsi'].iloc[-1]
+            
+            upper, middle, lower = calculate_bollinger_bands(df)
+            bb_bullish = current_price > middle.iloc[-1]
+            bb_signal = "Above middle band 📈" if bb_bullish else "Between bands ⚪"
+            
+            golden_cross, gc_message = check_golden_cross(df)
+            candle_pattern, _, is_engulfing = check_bullish_candles(df)
+            
+            tf_weight = 3 if tf == '4h' else 2 if tf == '1h' else 1
+            tf_score = 0
+            
+            if current_rsi >= 50:
+                tf_score += 2
+            if bb_bullish:
+                tf_score += 2
+            if golden_cross:
+                tf_score += 3
+            if is_engulfing:
+                tf_score += 2
+            
+            total_score += tf_score * tf_weight
+            
+            analyses[tf] = {
+                'rsi': current_rsi,
+                'bb_signal': bb_signal,
+                'golden_cross': golden_cross,
+                'gc_message': gc_message,
+                'candle_pattern': candle_pattern,
+                'current_price': current_price,
+                'upper_band': upper.iloc[-1],
+                'middle_band': middle.iloc[-1],
+                'atr_percent': atr_data['atr_percent']
+            }
+        
+        if not analyses:
+            continue
+        
+        best_atr = max([analyses[tf]['atr_percent'] for tf in analyses if analyses[tf]['atr_percent'] > 0], default=0)
+        if best_atr < MIN_ATR_PERCENT or best_atr > MAX_ATR_PERCENT:
+            continue
+        
+        if total_score < MIN_SCORE_LONG:
+            continue
+        
+        main_tf_4h = analyses.get('4h', {})
+        if REQUIRE_GOLDEN_CROSS and not main_tf_4h.get('golden_cross', False):
+            continue
+        
+        main_tf = analyses.get('4h') or analyses.get('1h') or analyses.get('15m')
+        current_price = main_tf['current_price']
+        
+        entry_low = round(current_price * 0.99, 4)
+        entry_high = round(current_price, 4)
+        expected_gain = round((main_tf['upper_band'] - current_price) / current_price * 100, 2)
+        if expected_gain < 2:
+            expected_gain = 3.0
+        
+        stop_loss = round(current_price * 0.97, 4)
+        take_profit_1 = round(current_price * 1.03, 4)
+        take_profit_2 = round(current_price * 1.06, 4)
+        
+        opportunities.append({
+            'symbol': sym,
+            'score': total_score,
+            'current_price': current_price,
+            'entry_low': entry_low,
+            'entry_high': entry_high,
+            'expected_gain': expected_gain,
+            'stop_loss': stop_loss,
+            'take_profit_1': take_profit_1,
+            'take_profit_2': take_profit_2,
+            'analyses': analyses,
+            'atr_percent': best_atr
+        })
+        
+        time.sleep(0.3)
     
-    if df is None or len(df) < 50:
-        logger.debug(f"⚠️ بيانات غير كافية لـ {symbol} (الطول: {len(df) if df is not None else 0})")
-        return None
-    
-    # حساب المؤشرات
-    df["rsi"] = calculate_rsi(df["close"])
-    df["ema20"] = calculate_ema(df["close"], 20)
-    df["ema50"] = calculate_ema(df["close"], 50)
-    df["stoch_rsi"] = calculate_stochastic_rsi(df["close"])
-    
-    current_price = df["close"].iloc[-1]
-    current_rsi = df["rsi"].iloc[-1]
-    current_stoch_rsi = df["stoch_rsi"].iloc[-1]
-    ema20 = df["ema20"].iloc[-1]
-    ema50 = df["ema50"].iloc[-1]
-    
-    # المسافة عن EMA
-    stretch_from_ema20 = ((current_price - ema20) / ema20) * 100
-    stretch_from_ema50 = ((current_price - ema50) / ema50) * 100
-    
-    # =================================================
-    # نظام التسجيل للبيع القصير (SHORT)
-    # =================================================
-    score = 0
-    signals = []
-    
-    # 1. RSI ذروة شراء (Overbought)
-    if current_rsi > 80:
-        score += 35
-        signals.append(f"RSI ذروة شراء قوية ({current_rsi:.1f})")
-    elif current_rsi > 70:
-        score += 20
-        signals.append(f"RSI ذروة شراء ({current_rsi:.1f})")
-    elif current_rsi > 60:
-        score += 10
-    
-    # 2. Stochastic RSI ذروة شراء
-    if current_stoch_rsi > 80:
-        score += 15
-        signals.append(f"Stoch RSI ذروة شراء ({current_stoch_rsi:.1f})")
-    
-    # 3. السعر بعيد عن EMA20 (للبيع)
-    if stretch_from_ema20 > 10:
-        score += 25
-        signals.append(f"سعر بعيد جداً عن EMA20 ({stretch_from_ema20:.1f}%)")
-    elif stretch_from_ema20 > 5:
-        score += 15
-        signals.append(f"سعر بعيد عن EMA20 ({stretch_from_ema20:.1f}%)")
-    elif stretch_from_ema20 > 3:
-        score += 8
-    
-    # 4. نمط شمعة علوية طويلة
-    if has_long_upper_wick(df):
-        score += 20
-        signals.append("نمط شمعة بفتيل علوي طويل")
-    
-    # 5. نمط Bearish Engulfing
-    if has_bearish_engulfing(df):
-        score += 25
-        signals.append("نمط Bearish Engulfing")
-    
-    # 6. ضعف الحجم
-    if is_volume_decreasing(df):
-        score += 15
-        signals.append("ضعف في حجم التداول")
-    
-    # 7. تباعد RSI سلبي
-    divergence = is_rsi_divergence(df)
-    if divergence["bearish"]:
-        score += 20
-        signals.append("تباعد RSI سلبي (Bearish Divergence)")
-    
-    # الحد الأقصى 100
-    score = min(score, 100)
-    
-    # إذا كانت النتيجة أقل من العتبة، تخطي
-    if score < SCORE_MEDIUM:
-        return None
-    
-    # =================================================
-    # إعدادات الدخول للصفقة (SHORT)
-    # =================================================
-    entry_low = current_price * 0.99    # منطقة دخول أولى
-    entry_high = current_price * 0.97   # منطقة دخول مثالية
-    stop_loss = current_price * 1.015   # وقف خسارة (1.5%)
-    take_profit_1 = current_price * 0.96  # هدف أول (-4%)
-    take_profit_2 = current_price * 0.94  # هدف ثاني (-6%)
-    
-    # الهبوط المتوقع بناءً على stretch
-    expected_drop = min(stretch_from_ema20 * 0.7, 15)  # حد أقصى 15%
-    
-    # =================================================
-    # بيانات إضافية للرسالة
-    # =================================================
-    # RSI على فترات مختلفة
-    rsi_5m = current_rsi
-    rsi_15m = df["rsi"].iloc[-3] if len(df) >= 3 else current_rsi
-    rsi_1h = df["rsi"].iloc[-12] if len(df) >= 12 else current_rsi
-    
-    # التغيرات على فترات مختلفة
-    change_24h = pump
-    change_4h = ((df["close"].iloc[-1] / df["close"].iloc[-48]) - 1) * 100 if len(df) >= 48 else pump
-    change_1h = ((df["close"].iloc[-1] / df["close"].iloc[-12]) - 1) * 100 if len(df) >= 12 else pump
-    
-    return {
-        "score": score,
-        "price": current_price,
-        "rsi": current_rsi,
-        "stretch": stretch_from_ema20,
-        "entry_low": entry_low,
-        "entry_high": entry_high,
-        "stop_loss": stop_loss,
-        "take_profit_1": take_profit_1,
-        "take_profit_2": take_profit_2,
-        "expected_drop": expected_drop,
-        "rsi_5m": rsi_5m,
-        "rsi_15m": rsi_15m,
-        "rsi_1h": rsi_1h,
-        "change_24h": change_24h,
-        "change_4h": change_4h,
-        "change_1h": change_1h,
-        "signals": signals,
-        "stoch_rsi": current_stoch_rsi
-    }
-
+    return opportunities
 
 # =========================================================
-# بناء رسالة الإشارة
+# MESSAGE FORMATTING
 # =========================================================
 
-def get_grade_and_color(score: int) -> tuple:
-    """تحديد التصنيف واللون بناءً على النتيجة"""
-    if score >= SCORE_VERY_GOOD:
-        return "🟢 VERY GOOD", "🟢", "HIGH"
-    elif score >= SCORE_GOOD:
-        return "🟡 GOOD", "🟡", "MEDIUM"
+def format_short_message(opp, paper_executed=False):
+    symbol = opp['symbol']
+    score = opp['score']
+    
+    if score >= 85:
+        grade = "🟢 VERY GOOD"
+        strength = "HIGH"
+        color = "🟢"
+    elif score >= 70:
+        grade = "🟡 GOOD"
+        strength = "MEDIUM"
+        color = "🟡"
     else:
-        return "🔴 MEDIUM", "🔴", "LOW"
-
-
-def build_signal_message(symbol: str, analysis: Dict[str, Any]) -> str:
-    """بناء رسالة الإشارة المنسقة"""
-    score = analysis["score"]
-    grade, color, probability = get_grade_and_color(score)
+        grade = "🔴 MEDIUM"
+        strength = "LOW"
+        color = "🔴"
     
-    # قائمة الإشارات المستخدمة
-    signals_list = "\n".join([f"  • {s}" for s in analysis["signals"][:5]])
+    paper_line = "\n━━━━━━━━━━━━━━━━━━\n🤖 PAPER TRADE: EXECUTED ✅" if paper_executed else ""
     
     message = f"""
-{color} <b>BINANCE — {grade}</b>
+{color} BINANCE — {grade}
 
 ━━━━━━━━━━━━━━━━━━
-🔥 <b>SHORT OPPORTUNITY</b>
+🔥 SHORT OPPORTUNITY
 ━━━━━━━━━━━━━━━━━━
 
-💰 <b>PAIR:</b> {symbol}
-🧠 <b>AI SCORE:</b> {score} / 100
-⚠️ <b>SIGNAL STRENGTH:</b> {grade}
-📊 <b>PROBABILITY:</b> {probability}
+💰 PAIR: {symbol}
+🧠 AI SCORE: {score} / 100
+⚠️ SIGNAL STRENGTH: {strength}
 
 ━━━━━━━━━━━━━━━━━━
-📈 <b>MARKET MOVEMENT</b>
+📊 MARKET MOVEMENT
 ━━━━━━━━━━━━━━━━━━
 
-• 24H CHANGE: {analysis['change_24h']:.2f}%
-• 4H CHANGE: {analysis['change_4h']:.2f}%
-• 1H CHANGE: {analysis['change_1h']:.2f}%
+📈 24H CHANGE: {opp['change_24h']:+.2f}%
+⏱ 4H CHANGE: {opp['change_4h']:+.2f}%
+⚡ 1H CHANGE: {opp['change_1h']:+.2f}%
 
 ━━━━━━━━━━━━━━━━━━
-🧠 <b>TECHNICAL ANALYSIS</b>
+🧠 TECHNICAL ANALYSIS
 ━━━━━━━━━━━━━━━━━━
 
-📊 RSI (5m): {analysis['rsi_5m']:.1f}
-📊 RSI (15m): {analysis['rsi_15m']:.1f}
-📊 RSI (1h): {analysis['rsi_1h']:.1f}
-📊 Stoch RSI: {analysis.get('stoch_rsi', 0):.1f}
+📊 RSI 5M: {opp['rsi_5m']:.2f}
+📊 RSI 15M: {opp['rsi_15m']:.2f}
+📊 RSI 1H: {opp['rsi_1h']:.2f}
 
-📏 EMA Distance: {analysis['stretch']:.2f}%
+🕯 CANDLE PATTERN:
+✔ Bearish Rejection
 
-🔍 <b>Signals detected:</b>
-{signals_list}
+📉 VOLUME STATUS:
+⚠ Weakening
 
-━━━━━━━━━━━━━━━━━━
-🎯 <b>SHORT SETUP</b>
-━━━━━━━━━━━━━━━━━━
+📏 EMA DISTANCE:
+{opp['stretch']:.2f}%
 
-🔴 <b>ENTRY ZONE:</b>
-   {analysis['entry_high']:.8f} → {analysis['entry_low']:.8f}
-
-🛑 <b>STOP LOSS:</b>
-   {analysis['stop_loss']:.8f}
-
-🎯 <b>TAKE PROFIT:</b>
-   TP1: {analysis['take_profit_1']:.8f}
-   TP2: {analysis['take_profit_2']:.8f}
-
-📉 <b>EXPECTED DROP:</b>
-   {analysis['expected_drop']:.2f}%
+📊 ATR (Avg True Range):
+{opp['atr_percent']:.2f}% ✅
 
 ━━━━━━━━━━━━━━━━━━
-💼 <b>RISK MANAGEMENT</b>
+🎯 TRADE SETUP
 ━━━━━━━━━━━━━━━━━━
 
-💵 POSITION SIZE: ${POSITION_SIZE}
-⚡ LEVERAGE: x{LEVERAGE} (Isolated)
+🔴 SHORT ENTRY ZONE:
+{opp['entry_low']:.8f} → {opp['entry_high']:.8f}
 
+📉 EXPECTED DROP:
+{opp['drop']:.2f}%
+
+━━━━━━━━━━━━━━━━━━
+💼 RISK MANAGEMENT
+━━━━━━━━━━━━━━━━━━
+
+💵 POSITION SIZE: 5$
+⚡ LEVERAGE: x2 (Isolated)
+{paper_line}
 ━━━━━━━━━━━━━━━━━━
 ⏱ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 ━━━━━━━━━━━━━━━━━━
 """
-    return message.strip()
+    return message
 
+def format_long_message(opp, paper_executed=False):
+    symbol = opp['symbol']
+    score = opp['score']
+    
+    if score >= 30:
+        strength_emoji = "🚀🚀🚀"
+        strength_text = "VERY STRONG"
+    elif score >= 20:
+        strength_emoji = "🚀🚀"
+        strength_text = "STRONG"
+    elif score >= 15:
+        strength_emoji = "📈"
+        strength_text = "MEDIUM"
+    else:
+        strength_emoji = "⭐"
+        strength_text = "WEAK"
+    
+    rsi_lines = []
+    for tf in ['15m', '1h', '4h']:
+        if tf in opp['analyses']:
+            rsi_value = opp['analyses'][tf]['rsi']
+            if rsi_value >= 50:
+                emoji = "📈"
+                status = "Bullish momentum"
+            elif rsi_value >= 30:
+                emoji = "⚪"
+                status = "Neutral"
+            else:
+                emoji = "📉"
+                status = "Weak"
+            rsi_lines.append(f"• {tf}: {rsi_value:.1f} ({status}) {emoji}")
+    
+    bb_4h = opp['analyses'].get('4h', opp['analyses']['1h'])
+    candle_4h = opp['analyses'].get('4h', opp['analyses']['1h'])
+    gc_4h = opp['analyses'].get('4h', opp['analyses']['1h'])
+    
+    paper_line = "\n━━━━━━━━━━━━━━━━━━\n🤖 PAPER TRADE: EXECUTED ✅" if paper_executed else ""
+    
+    message = f"""
+{strength_emoji} <b>BULLISH OPPORTUNITY</b> {strength_emoji}
+
+━━━━━━━━━━━━━━━━━━
+<b>PAIR:</b> {symbol}
+<b>AI SCORE:</b> {score} / 100
+<b>SIGNAL STRENGTH:</b> {strength_text}
+━━━━━━━━━━━━━━━━━━
+
+<b>💰 CURRENT PRICE:</b> ${opp['current_price']:.4f}
+
+<b>🎯 ENTRY ZONE:</b>
+{opp['entry_low']:.4f} → {opp['entry_high']:.4f}
+
+━━━━━━━━━━━━━━━━━━
+<b>📊 TECHNICAL ANALYSIS</b>
+━━━━━━━━━━━━━━━━━━
+
+<b>📈 RSI ANALYSIS:</b>
+{chr(10).join(rsi_lines)}
+
+<b>📊 BOLLINGER BANDS:</b>
+• Position: {bb_4h['bb_signal']}
+• ATR %: {opp['atr_percent']:.2f}% ✅
+
+<b>🕯️ CANDLE PATTERNS:</b>
+• {candle_4h['candle_pattern']}
+
+<b>🟡 GOLDEN CROSS:</b>
+• {gc_4h['gc_message']}
+
+━━━━━━━━━━━━━━━━━━
+<b>💡 TRADE SETUP (LONG)</b>
+━━━━━━━━━━━━━━━━━━
+
+<b>📈 LONG ENTRY ZONE:</b>
+{opp['entry_low']:.4f} → {opp['entry_high']:.4f}
+
+<b>🎯 EXPECTED GAIN:</b>
+{opp['expected_gain']}%
+
+━━━━━━━━━━━━━━━━━━
+<b>⚙️ RISK MANAGEMENT</b>
+━━━━━━━━━━━━━━━━━━
+
+<b>💰 POSITION SIZE:</b> ${MAX_POSITION_SIZE}
+<b>📊 LEVERAGE:</b> x{MAX_LEVERAGE} (Isolated)
+<b>🛑 STOP LOSS:</b> ${opp['stop_loss']}
+<b>✅ TAKE PROFIT 1:</b> ${opp['take_profit_1']}
+<b>✅ TAKE PROFIT 2:</b> ${opp['take_profit_2']}
+{paper_line}
+━━━━━━━━━━━━━━━━━━
+⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+━━━━━━━━━━━━━━━━━━
+"""
+    return message
 
 # =========================================================
-# الحلقة الرئيسية
+# MAIN LOOP WITH PAPER TRADING
 # =========================================================
 
-def save_signal_to_log(symbol: str, analysis: Dict[str, Any]):
-    """حفظ الإشارة في ملف JSON للتتبع"""
-    signal_data = {
-        "timestamp": datetime.now().isoformat(),
-        "symbol": symbol,
-        "score": analysis["score"],
-        "price": analysis["price"],
-        "rsi": analysis["rsi"],
-        "change_24h": analysis["change_24h"]
-    }
-    
-    log_file = "signals_history.json"
-    
+sent_short = set()
+sent_long = set()
+full_scan_counter = 0
+
+paper = PaperTrading()
+paper.send_excel_to_telegram()
+
+if PAPER_TRADING_ENABLED:
+    paper_thread = threading.Thread(target=paper.run, daemon=True)
+    paper_thread.start()
+    print("🤖 Paper Trading thread started")
+
+print("🚀 SIGNAL SCANNER STARTED - SENDING SIGNALS ONLY")
+print(f"📊 Total coins: {MAX_COINS_TO_SCAN}")
+print(f"💰 Paper Trading: {'ON' if PAPER_TRADING_ENABLED else 'OFF'}")
+
+send(f"🚀 <b>SIGNAL SCANNER + PAPER TRADING STARTED</b>\n\n📊 Scanning {MAX_COINS_TO_SCAN} coins\n💰 Paper Trading Active\n💵 Initial Balance: ${PAPER_INITIAL_BALANCE}\n\n🎯 Only quality signals (Score > 75) will be executed in paper trading!")
+
+last_excel_send = time.time()
+
+while True:
     try:
-        if os.path.exists(log_file):
-            with open(log_file, 'r', encoding='utf-8') as f:
-                history = json.load(f)
-        else:
-            history = []
+        print(f"\n{'='*50}")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Scanning cycle started")
+        print(f"{'='*50}")
         
-        history.append(signal_data)
+        # =================================================
+        # SCAN SHORT
+        # =================================================
+        print("\n📉 Scanning SHORT...")
+        short_opps = scan_short_opportunities()
+        print(f"Found {len(short_opps)} SHORT opportunities")
         
-        # الاحتفاظ بآخر 1000 إشارة فقط
-        if len(history) > 1000:
-            history = history[-1000:]
-        
-        with open(log_file, 'w', encoding='utf-8') as f:
-            json.dump(history, f, indent=2, ensure_ascii=False)
-            
-    except Exception as e:
-        logger.error(f"❌ فشل حفظ الإشارة في السجل: {e}")
-
-
-def run_scanner():
-    """تشغيل الماسح الضوئي"""
-    global running, cache_buster
-    sent = set()
-    
-    logger.info("🚀 بدء تشغيل الماسح الضوئي Binance V3")
-    logger.info(f"⚙️ الإعدادات: الفاصل={INTERVAL}s | أقل مضخة={MIN_PUMP}% | أقل حجم={MIN_VOLUME:,.0f}$")
-    
-    if TEST_MODE:
-        logger.info("🧪 وضع الاختبار مفعل - لن يتم إرسال رسائل فعلية إلى تيليجرام")
-    
-    # إرسال رسالة بدء التشغيل
-    send_startup_message()
-    
-    last_cache_update = time.time()
-    
-    while running:
-        loop_start = time.time()
-        
-        try:
-            # تحديث الكاش كل 5 دقائق
-            if time.time() - last_cache_update >= 300:
-                cache_buster = int(time.time() // 300)
-                last_cache_update = time.time()
-                logger.debug("🔄 تحديث كاش البيانات")
-            
-            # فحص العملات
-            candidates = scan_high_pump_coins()
-            
-            if not candidates:
-                logger.info("⏳ لا توجد عملات تطابق المعايير، انتظار...")
-                time.sleep(INTERVAL)
+        for opp in short_opps[:5]:
+            if opp['symbol'] in sent_short:
                 continue
             
-            signals_found = 0
+            paper_executed = False
+            if PAPER_TRADING_ENABLED and opp['score'] >= 75:
+                stop_loss = opp['current_price'] * 1.02
+                take_profit = opp['current_price'] * 0.97
+                paper.enter_short(opp['symbol'], opp['current_price'], stop_loss, take_profit, opp['score'])
+                paper_executed = True
             
-            for coin in candidates:
-                if not running:
-                    break
-                
-                symbol = coin["symbol"]
-                uid = symbol
-                
-                # تخطي الإشارات المكررة
-                if uid in sent:
+            message = format_short_message(opp, paper_executed)
+            send(message)
+            sent_short.add(opp['symbol'])
+            print(f"  ✅ Sent SHORT: {opp['symbol']}")
+        
+        # =================================================
+        # SCAN LONG WITH BATCHES
+        # =================================================
+        print("\n📈 Scanning LONG...")
+        
+        all_symbols = get_all_usdt_pairs(MAX_COINS_TO_SCAN)
+        total_batches = (len(all_symbols) + BATCH_SIZE - 1) // BATCH_SIZE
+        
+        all_long_opportunities = []
+        
+        for batch_num in range(total_batches):
+            batch_start = batch_num * BATCH_SIZE
+            batch_end = min(batch_start + BATCH_SIZE, len(all_symbols))
+            batch_symbols = all_symbols[batch_start:batch_end]
+            
+            print(f"  Batch {batch_num + 1}/{total_batches} - {len(batch_symbols)} coins")
+            
+            batch_opps = scan_long_opportunities_batch(batch_symbols, batch_num + 1, total_batches)
+            
+            for opp in batch_opps:
+                if opp['symbol'] in sent_long:
                     continue
                 
-                logger.info(f"📊 تحليل {symbol}...")
+                paper_executed = False
+                if PAPER_TRADING_ENABLED and opp['score'] >= 75:
+                    stop_loss = opp['current_price'] * 0.98
+                    take_profit = opp['current_price'] * 1.03
+                    paper.enter_long(opp['symbol'], opp['current_price'], stop_loss, take_profit, opp['score'])
+                    paper_executed = True
                 
-                analysis = analyze_coin(symbol, coin["pump"])
-                
-                if analysis is None:
-                    continue
-                
-                signals_found += 1
-                
-                # بناء وإرسال الرسالة
-                message = build_signal_message(symbol, analysis)
-                print(f"\n{message}\n")
-                send_telegram_message(message)
-                
-                # حفظ الإشارة في السجل
-                save_signal_to_log(symbol, analysis)
-                
-                sent.add(uid)
-                
-                # تجنب إرسال إشارات كثيرة في دورة واحدة
-                if signals_found >= 5:
-                    logger.info("📊 تم الوصول للحد الأقصى للإشارات في هذه الدورة")
-                    break
+                message = format_long_message(opp, paper_executed)
+                send(message)
+                sent_long.add(opp['symbol'])
+                all_long_opportunities.append(opp)
+                print(f"  ✅ Sent LONG: {opp['symbol']}")
             
-            if signals_found == 0:
-                logger.info("⏳ لم يتم العثور على إشارات قوية في هذه الدورة")
+            time.sleep(BATCH_SCAN_TIME)
             
-            # حساب وقت الانتظار
-            elapsed = time.time() - loop_start
-            wait_time = max(1, INTERVAL - elapsed)
-            logger.info(f"💤 انتظار {wait_time:.0f} ثانية حتى الدورة التالية...")
-            
-            # انتظار مع إمكانية الإيقاف
-            for _ in range(int(wait_time)):
-                if not running:
-                    break
-                time.sleep(1)
-                
-        except Exception as e:
-            logger.error(f"❌ خطأ في الحلقة الرئيسية: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            time.sleep(INTERVAL)
-    
-    logger.info("👋 تم إيقاف الماسح الضوئي")
-
-
-# =========================================================
-# نقطة الدخول الرئيسية
-# =========================================================
-
-def main():
-    """الدالة الرئيسية"""
-    try:
-        run_scanner()
-    except KeyboardInterrupt:
-        logger.info("\n👋 تم الإيقاف بواسطة المستخدم")
+            if batch_num < total_batches - 1:
+                print(f"  💤 Resting {REST_TIME_BETWEEN_BATCHES} seconds...")
+                time.sleep(REST_TIME_BETWEEN_BATCHES)
+        
+        # =================================================
+        # SEND PAPER TRADING SUMMARY & EXCEL
+        # =================================================
+        if time.time() - last_excel_send > 3600:
+            paper.send_excel_to_telegram()
+            send(paper.get_summary_message())
+            last_excel_send = time.time()
+        
+        print(f"\n✅ Cycle complete. Total SHORT: {len(short_opps[:5])}, LONG: {len(all_long_opportunities)}")
+        print(f"⏳ Waiting {INTERVAL} seconds...\n")
+        
+        time.sleep(INTERVAL)
+        
     except Exception as e:
-        logger.error(f"❌ خطأ غير متوقع: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
+        print(f"❌ ERROR: {e}")
+        time.sleep(60)

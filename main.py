@@ -22,7 +22,7 @@ INTERVAL = 180  # 3 دقائق بين الدورات
 
 # إعدادات SHORT
 MIN_PUMP = 8
-MIN_VOLUME = 100000
+MIN_VOLUME = 50000
 
 # إعدادات LONG
 MAX_POSITION_SIZE = 100
